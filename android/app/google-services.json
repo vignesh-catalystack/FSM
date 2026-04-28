@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "69458205076",
+    "project_id": "fsm-57b79",
+    "storage_bucket": "fsm-57b79.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:69458205076:android:7b36523cbb795f165d9781",
+        "android_client_info": {
+          "package_name": "com.example.fsm"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyApDTMWkwpEwBL9IU94dLOmGWT4BJXQ33k"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

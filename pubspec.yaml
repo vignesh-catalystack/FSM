@@ -1,0 +1,108 @@
+# ------------------------------------------------------------
+# Project basic information
+# ------------------------------------------------------------
+name: fsm
+description: "FSM role-based authentication app"
+publish_to: 'none' # Prevents publishing to pub.dev (recommended for private apps)
+
+# ------------------------------------------------------------
+# App versioning
+# version: MAJOR.MINOR.PATCH+BUILD
+# ------------------------------------------------------------
+version: 1.0.0+1
+
+# ------------------------------------------------------------
+# Dart SDK constraints
+# Works with Flutter 3.x
+# ------------------------------------------------------------
+environment:
+  sdk: ">=3.0.0 <4.0.0"
+
+# ------------------------------------------------------------
+# Application dependencies
+# ------------------------------------------------------------
+dependencies:
+  flutter:
+    sdk: flutter
+
+  # State management (production-level)
+  flutter_riverpod: ^2.5.1
+
+  # iOS-style icons (default Flutter package)
+  cupertino_icons: ^1.0.8
+
+  # HTTP client
+  http: ^1.2.0
+
+  # ----------------------------------------------------------
+  # Permissions (CRITICAL for your feature)
+  # ----------------------------------------------------------
+  permission_handler: ^11.0.1
+
+  # ----------------------------------------------------------
+  # Location (NEXT STEP - tracking engine)
+  # ----------------------------------------------------------
+  geolocator: ^11.0.0
+  # google_maps_flutter: ^2.7.0  # Disabled: migrated to flutter_map (no Google Maps API key required for OSM tiles)
+  flutter_map: ^6.1.0
+  latlong2: ^0.9.1
+  shared_preferences: ^2.3.2
+
+
+  # 🔥 Firebase (REQUIRED)
+  firebase_core: ^3.6.0
+  firebase_messaging: ^15.0.0
+
+  battery_plus: ^6.0.0 
+  flutter_local_notifications: ^17.0.0
+  
+
+# ------------------------------------------------------------
+# Development dependencies (only for development & testing)
+# ------------------------------------------------------------
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+
+  # Recommended lints for clean & consistent code
+  flutter_lints: ^6.0.0
+  flutter_launcher_icons: ^0.13.1
+
+  
+  
+
+# ------------------------------------------------------------
+# Flutter specific configuration
+# ------------------------------------------------------------
+flutter:
+
+  # Enables Material Icons
+  uses-material-design: true
+
+  # ----------------------------------------------------------
+  # Assets (add later if needed)
+  # ----------------------------------------------------------
+  assets:
+    - assets/icons/login_icon.png
+    - assets/logo/app_launcher.png
+
+  # ----------------------------------------------------------
+  # Fonts (add later if needed)
+  # ----------------------------------------------------------
+  # fonts:
+  #   - family: Inter
+  #     fonts:
+  #       - asset: assets/fonts/Inter-Regular.ttf
+  #       - asset: assets/fonts/Inter-Bold.ttf
+  #         weight: 700
+
+# ------------------------------------------------------------
+# App launcher icon configuration
+# ------------------------------------------------------------
+flutter_launcher_icons:
+  android: true
+  ios: true
+  image_path: assets/logo/app_launcher.png
+  min_sdk_android: 21
+  remove_alpha_ios: true
+
