@@ -60,39 +60,45 @@ class AuthApiService {
     return Exception('Unexpected network error');
   }
 
-  Future<Map<String, dynamic>> login({
-    required String email,
-    required String password,
-  }) async {
-    try {
-      final response = await ResilientHttp.post(
-        uri: AppApiConfig.endpointUri('auth/login.php'),
-        headers: AppApiConfig.buildHeaders(),
-        body: jsonEncode({
-          'email': email,
-          'password': password,
-        }),
-        timeout: _requestTimeout,
-      );
+Future<Map<String, dynamic>> login({
+  required String email,
+  required String password,
+}) async {
+  try {
+    final response = await ResilientHttp.post(
+      uri: AppApiConfig.endpointUri('auth/login.php'),
+      headers: AppApiConfig.buildHeaders(),
+      body: jsonEncode({
+        'email': email,
+        'password': password,
+      }),
+      timeout: _requestTimeout,
+    );
 
-      final payload = _decodeResponseMap(
-        response,
-        fallbackMessage: 'Unexpected login response format',
-      );
-      final authHeader = response.headers['authorization'];
-      if (authHeader != null && authHeader.trim().isNotEmpty) {
-        payload['authorization_header'] = authHeader;
-      }
+    final payload = _decodeResponseMap(
+      response,
+      fallbackMessage: 'Unexpected login response format',
+    );
 
-      if (response.statusCode != 200) {
-        throw Exception(payload['message'] ?? 'Login failed');
-      }
-      return payload;
-    } catch (error) {
-      throw _mapTransportError(error);
+    final authHeader = response.headers['authorization'];
+    if (authHeader != null && authHeader.trim().isNotEmpty) {
+      payload['authorization_header'] = authHeader;
     }
-  }
 
+    // 🔥 CRITICAL FIX: HANDLE BACKEND ERROR CODE
+    if (payload['status'] == 'error') {
+      throw Exception(payload['code']); // <-- THIS FIXES EVERYTHING
+    }
+
+    if (response.statusCode != 200) {
+      throw Exception('HTTP_${response.statusCode}');
+    }
+
+    return payload;
+  } catch (error) {
+    throw _mapTransportError(error);
+  }
+}
   Future<String> forgotPassword(String email) async {
     try {
       final response = await ResilientHttp.post(

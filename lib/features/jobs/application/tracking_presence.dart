@@ -26,7 +26,7 @@ class TrackingSnapshot {
       hasCoordinates && hasTrackingSignal && !isTerminal && !isLive;
 
   bool get shouldAppearInFeed =>
-      hasCoordinates && hasTrackingSignal && !isTerminal;
+      hasCoordinates && !isTerminal && (hasTrackingSignal || isFromCache);
 }
 
 class TrackingPresence {
@@ -66,8 +66,15 @@ class TrackingPresence {
     Duration freshness = freshnessWindow,
   }) {
     final updatedAt = parseDateTime(row['updated_at']);
-    final hasCoordinates =
-        asDouble(row['latitude']) != null && asDouble(row['longitude']) != null;
+    final latitude = asDouble(row['latitude']);
+    final longitude = asDouble(row['longitude']);
+    final hasCoordinates = latitude != null &&
+        longitude != null &&
+        latitude >= -90 &&
+        latitude <= 90 &&
+        longitude >= -180 &&
+        longitude <= 180 &&
+        !(latitude == 0.0 && longitude == 0.0);
     final status = row['status']?.toString();
     final trackingStatus = row['tracking_status']?.toString();
 

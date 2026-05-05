@@ -155,62 +155,86 @@ class LoginNotifier extends StateNotifier<LoginState> {
         lower.contains('login failed');
   }
 
-  Future<void> login(String email, String password) async {
-    final trimmedEmail = email.trim();
-    final trimmedPassword = password.trim();
+Future<void> login(String email, String password) async {
+  final trimmedEmail = email.trim();
+  final trimmedPassword = password.trim();
 
-    if (trimmedEmail.isEmpty || trimmedPassword.isEmpty) {
-      state = LoginState(
-        emailError: trimmedEmail.isEmpty ? 'Enter your email' : null,
-        passwordError: trimmedPassword.isEmpty ? 'Enter your password' : null,
+  if (trimmedEmail.isEmpty || trimmedPassword.isEmpty) {
+    state = LoginState(
+      emailError: trimmedEmail.isEmpty ? 'Enter your email' : null,
+      passwordError: trimmedPassword.isEmpty ? 'Enter your password' : null,
+    );
+    return;
+  }
+
+  state = const LoginState(loading: true);
+
+  try {
+    final response = await _authApi.login(
+      email: trimmedEmail,
+      password: trimmedPassword,
+    );
+
+    // 🔥 USE YOUR HELPERS (robust)
+    final roleString = _extractRoleString(response);
+    if (roleString == null) {
+      throw Exception('INVALID_ROLE');
+    }
+
+    final role = _parseRole(roleString);
+    if (role == null) {
+      throw Exception('UNSUPPORTED_ROLE');
+    }
+
+    final token = _extractToken(response);
+    if (token == null) {
+      throw Exception('MISSING_TOKEN');
+    }
+
+    // 🔥 CONNECT GLOBAL AUTH
+    ref.read(authProvider.notifier).login(role, token: token);
+
+    state = const LoginState();
+  } catch (e) {
+    final msg = e.toString().replaceFirst('Exception: ', '').trim().toUpperCase();
+
+    // 🔥 DIRECT CODE MAPPING (NO STRING GUESSING)
+    if (msg.contains('USER_NOT_FOUND')) {
+      state = const LoginState(
+        emailError: 'Email address not registered.',
       );
       return;
     }
 
-    state = const LoginState(loading: true);
-
-    try {
-      final response = await _authApi.login(
-        email: trimmedEmail,
-        password: trimmedPassword,
+    if (msg.contains('WRONG_PASSWORD')) {
+      state = const LoginState(
+        passwordError: 'Incorrect password.',
       );
-
-      final roleString = _extractRoleString(response);
-      if (roleString == null) {
-        throw Exception('Login succeeded but no user role was returned.');
-      }
-
-      final role = _parseRole(roleString);
-      if (role == null) {
-        throw Exception('Unsupported user role: $roleString');
-      }
-
-      final token = _extractToken(response);
-
-      ref.read(authProvider.notifier).login(role, token: token);
-
-      state = const LoginState();
-    } catch (e) {
-      final message = _cleanError(e);
-      final lower = message.toLowerCase();
-      final isCredentialError = _looksLikeCredentialError(message);
-      state = LoginState(
-        error: isCredentialError ? null : message,
-        emailError: isCredentialError &&
-                (lower.contains('user not found') ||
-                    lower.contains('invalid user') ||
-                    lower.contains('invalid email'))
-            ? 'Email address was not recognized.'
-            : null,
-        passwordError: isCredentialError &&
-                !(lower.contains('user not found') ||
-                    lower.contains('invalid user') ||
-                    lower.contains('invalid email'))
-            ? 'Wrong email or password. Please try again.'
-            : null,
-      );
+      return;
     }
+
+    if (msg.contains('MISSING_FIELDS')) {
+      state = const LoginState(
+        error: 'Email and password are required.',
+      );
+      return;
+    }
+
+    if (msg.contains('HTTP_')) {
+      state = const LoginState(
+        error: 'Server error. Please try again later.',
+      );
+      return;
+    }
+
+    // fallback
+    state = LoginState(
+      error: msg.isNotEmpty
+          ? msg
+          : 'Login failed. Please try again.',
+    );
   }
+}
 }
 
 final loginProvider =

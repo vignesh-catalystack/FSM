@@ -264,8 +264,16 @@ class _TechnicianLocationsMapScreenState
     return int.tryParse(value.toString());
   }
 
-  bool _isLiveTrackingRow(Map<String, dynamic> row) =>
-      TrackingPresence.evaluate(row).isLive;
+  // bool _isLiveTrackingRow(Map<String, dynamic> row) =>
+  //     TrackingPresence.evaluate(row).isLive;
+bool _isLiveTrackingRow(Map<String, dynamic> row) {
+  final status = row['tracking_status']?.toString().toLowerCase();
+  final updatedAt = DateTime.tryParse(row['updated_at'] ?? '');
+
+  if (status != 'active' || updatedAt == null) return false;
+
+  return DateTime.now().difference(updatedAt) < Duration(minutes: 2);
+}
 
   List<Map<String, dynamic>> _dedupeRowsByTrackingKey(
     List<Map<String, dynamic>> rows, {
@@ -828,7 +836,7 @@ if (distance >= 5 && distance <= 100) {
             );
           },
         )
-        .toList(growable: false);
+        .toList();
   }
 
   void _fitCamera(
@@ -939,13 +947,18 @@ if (distance >= 5 && distance <= 100) {
           final trackedRows = scopedLiveRows
               .where((row) => TrackingPresence.evaluate(row).shouldAppearInFeed)
               .toList(growable: false);
-          final filteredLiveRows = scopedLiveRows
-              .where(_isLiveTrackingRow)
-              .toList(growable: false);
-          final staleTrackedRows = trackedRows
-              .where((row) => !TrackingPresence.evaluate(row).isLive)
-              .toList(growable: false);
-          final filteredHistoryRows = historyRows.where((row) {
+          // final filteredLiveRows = scopedLiveRows
+          //     .where(_isLiveTrackingRow)
+          //     .toList(growable: false);
+          final filteredLiveRows =
+    List<Map<String, dynamic>>.from(scopedLiveRows);
+  final trackedRows = List<Map<String, dynamic>>.from(
+  scopedLiveRows.where(
+    (row) => TrackingPresence.evaluate(row).shouldAppearInFeed,
+  ),
+);
+final filteredHistoryRows = List<Map<String, dynamic>>.from(
+  historyRows.where((row) {
             final matchesJob = widget.jobIdFilter == null ||
                 _asInt(row['job_id']) == widget.jobIdFilter;
             final matchesTechnician = widget.technicianIdFilter == null ||
@@ -967,14 +980,15 @@ if (distance >= 5 && distance <= 100) {
               filteredLiveRows.isEmpty &&
               filteredHistoryRows.isEmpty &&
               staleTrackedRows.isNotEmpty;
-          final useOfflineHistory =
-              widget.offlineHistoryOnly || showHistoryFallback;
+          // final useOfflineHistory =
+          //     widget.offlineHistoryOnly || showHistoryFallback;
+          final useOfflineHistory = false;
           final locations = useOfflineHistory
               ? _extractOfflineHistoryLocations(scopedLiveRows, filteredHistoryRows)
               : showLastKnownFallback
                   ? _extractLastKnownLocations(staleTrackedRows)
                   : _extractLocations(filteredLiveRows);
-          final markers = _buildMarkers(locations);
+        final markers = List<Marker>.from(_buildMarkers(locations));
           final historyPolylines = _buildHistoryPolylines(
             filteredHistoryRows,
             locations,

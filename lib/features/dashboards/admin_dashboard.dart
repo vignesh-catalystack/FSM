@@ -5,7 +5,9 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:fsm/core/auth/auth_notifier.dart';
 import 'package:fsm/features/jobs/application/job_controller.dart';
 import 'package:fsm/features/jobs/application/tracking_presence.dart';
-import 'package:fsm/features/jobs/presentation/technician_locations_map_screen.dart';
+import 'package:fsm/features/jobs/presentation/technician_map_logic.dart';
+import 'package:fsm/features/jobs/presentation/technician_map_models.dart';
+import 'package:fsm/features/jobs/presentation/technician_map_screen.dart';
 import 'package:fsm/features/notifications/application/notification_controller.dart';
 
 // ============================================================================

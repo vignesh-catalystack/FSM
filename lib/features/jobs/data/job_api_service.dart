@@ -687,6 +687,7 @@ Map<String, dynamic> _normalizeLiveRow(Map<String, dynamic> row) {
     final headers = _jsonHeaders(normalizedToken);
     final formHeaders = _formHeaders(normalizedToken);
 
+    final locationCapturedAt = (capturedAt ?? DateTime.now()).toIso8601String();
     final payload = <String, dynamic>{
       'job_id': jobId,
       'id': jobId,
@@ -703,13 +704,13 @@ Map<String, dynamic> _normalizeLiveRow(Map<String, dynamic> row) {
       'accuracy': accuracy,
       'speed': speed,
       'heading': heading,
-      'updated_at': (capturedAt ?? DateTime.now()).toIso8601String(),
-      
+      'updated_at': locationCapturedAt,
+      'captured_at': locationCapturedAt,
     };
-if (battery != null) {
-  payload['battery'] = battery;
-  payload['is_charging'] = isCharging ?? 0;
-}
+    if (battery != null) {
+      payload['battery'] = battery;
+      payload['is_charging'] = isCharging ?? 0;
+    }
     final errors = <String>[];
     for (final endpoint in _locationUpdateEndpoints) {
       try {
@@ -829,8 +830,9 @@ if (battery != null) {
             .toList(growable: false);
         final deduped = _dedupeLiveRows(normalized);
         if (deduped.isEmpty) {
-          errors.add('$endpoint -> no active live points');
-          continue;
+          _preferredLiveEndpoint = endpoint;
+          await TrackingCacheStore.cacheLiveRows(const <Map<String, dynamic>>[]);
+          return const <Map<String, dynamic>>[];
         }
         _preferredLiveEndpoint = endpoint;
         await TrackingCacheStore.cacheLiveRows(deduped);
@@ -876,9 +878,6 @@ if (battery != null) {
     final headers = _jsonHeaders(normalizedToken);
     final cachedHistory = await TrackingCacheStore.readHistoryPoints();
     final renderableCachedHistory = _filterRenderableHistoryRows(cachedHistory);
-    if (_preferredHistoryEndpoint == null && renderableCachedHistory.isNotEmpty) {
-      return renderableCachedHistory;
-    }
 
     final errors = <String>[];
     final notFoundEndpoints = <String>[];
