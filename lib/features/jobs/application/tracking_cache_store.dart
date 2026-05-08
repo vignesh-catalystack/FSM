@@ -28,7 +28,7 @@ class TrackingCacheStore {
   static Future<void> cacheLiveRows(List<Map<String, dynamic>> rows) async {
     final prefs = await _prefsOrNull();
     if (prefs == null) return;
-    final trimmed = rows.take(_maxLiveRows).toList(growable: false);
+    final trimmed = rows.take(_maxLiveRows).toList();
     await prefs.setString(_liveCacheKey, jsonEncode(trimmed));
   }
 

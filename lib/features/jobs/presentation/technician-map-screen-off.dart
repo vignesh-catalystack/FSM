@@ -3,11 +3,16 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter_map/flutter_map.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:latlong2/latlong.dart';
 
 import 'package:fsm/features/jobs/application/job_controller.dart';
+import 'package:fsm/features/jobs/application/tracking_presence.dart';
 import 'technician_map_logic.dart';
 import 'technician_map_models.dart';
 
+// ─────────────────────────────────────────────
+// Screen widget
+// ─────────────────────────────────────────────
 class TechnicianLocationsMapScreen extends TechnicianLocationsMapScreenBase {
   const TechnicianLocationsMapScreen({
     super.key,
@@ -43,9 +48,15 @@ class TechnicianLocationsMapScreen extends TechnicianLocationsMapScreenBase {
       _TechnicianLocationsMapScreenState();
 }
 
+// ─────────────────────────────────────────────
+// State — lifecycle + build only;
+// all business logic lives in TechnicianMapLogic.
+// ─────────────────────────────────────────────
 class _TechnicianLocationsMapScreenState
     extends ConsumerState<TechnicianLocationsMapScreen>
     with TechnicianMapLogic<TechnicianLocationsMapScreen> {
+  // ── lifecycle ─────────────────────────────────────────────────────────────
+
   @override
   void initState() {
     super.initState();
@@ -58,24 +69,28 @@ class _TechnicianLocationsMapScreenState
     super.dispose();
   }
 
+  // ── helpers ───────────────────────────────────────────────────────────────
+
   String _appBarTitle() {
     if (widget.offlineHistoryOnly && widget.jobIdFilter != null) {
-      return 'Offline History - Job ${widget.jobIdFilter}';
+      return 'Offline History – Job ${widget.jobIdFilter}';
     }
     return widget.liveOnly ? 'Live Technician Map' : 'Technician Locations';
   }
+
+  // ── build ─────────────────────────────────────────────────────────────────
 
   @override
   Widget build(BuildContext context) {
     final liveAsync = ref.watch(adminTechnicianLiveProvider);
     final historyAsync = ref.watch(adminTechnicianHistoryProvider);
 
-    final liveRows = liveAsync.valueOrNull ??
-        widget.seedRows ??
-        const <Map<String, dynamic>>[];
+    final liveRows =
+        liveAsync.valueOrNull ?? widget.seedRows ?? const <Map<String, dynamic>>[];
     final historyRows =
         historyAsync.valueOrNull ?? const <Map<String, dynamic>>[];
 
+    // ── loading ──────────────────────────────────────────────────────────────
     if (liveAsync.isLoading && liveRows.isEmpty) {
       return Scaffold(
         appBar: AppBar(title: Text(_appBarTitle())),
@@ -83,6 +98,7 @@ class _TechnicianLocationsMapScreenState
       );
     }
 
+    // ── error ────────────────────────────────────────────────────────────────
     if (liveAsync.hasError && liveRows.isEmpty) {
       return Scaffold(
         appBar: AppBar(title: Text(_appBarTitle())),
@@ -100,7 +116,8 @@ class _TechnicianLocationsMapScreenState
                 ),
                 const SizedBox(height: 12),
                 ElevatedButton.icon(
-                  onPressed: () => ref.invalidate(adminTechnicianLiveProvider),
+                  onPressed: () =>
+                      ref.invalidate(adminTechnicianLiveProvider),
                   icon: const Icon(Icons.refresh),
                   label: const Text('Retry'),
                 ),
@@ -111,213 +128,259 @@ class _TechnicianLocationsMapScreenState
       );
     }
 
+    // ── main scaffold ─────────────────────────────────────────────────────────
     return Scaffold(
       appBar: AppBar(title: Text(_appBarTitle())),
-      body: Builder(
-        builder: (context) {
-          final scopedLiveRows = dedupeRowsByTrackingKey(
-            liveRows.where(matchesFilters).toList(growable: true),
-            timestampField: 'updated_at',
-          );
+      body: Builder(builder: (context) {
+        // ── 1. Filter rows by the optional job / technician selectors ─────────
+        bool matchesFilters(Map<String, dynamic> row) {
+          final matchesJob = widget.jobIdFilter == null ||
+              asInt(row['job_id']) == widget.jobIdFilter;
+          final matchesTech = widget.technicianIdFilter == null ||
+              asInt(row['technician_id']) == widget.technicianIdFilter;
+          return matchesJob && matchesTech;
+        }
 
-          final filteredHistoryRows =
-              historyRows.where(matchesFilters).toList(growable: true);
+        final scopedLiveRows = dedupeRowsByTrackingKey(
+          liveRows.where(matchesFilters).toList(growable: false),
+          timestampField: 'updated_at',
+        );
 
-          final trackedRows = scopedLiveRows
-              .where(rowShouldAppearInFeed)
-              .toList(growable: true);
-          final liveNowRows =
-              scopedLiveRows.where(rowIsLive).toList(growable: true);
+        final filteredHistoryRows = historyRows
+            .where(matchesFilters)
+            .toList(growable: false);
 
-          if (widget.offlineHistoryOnly &&
-              historyAsync.isLoading &&
-              historyAsync.valueOrNull == null) {
-            return const Center(child: CircularProgressIndicator());
-          }
+        // ── 2. Decide which technicians are "tracked" (appear in feed) ────────
+        //   trackedRows  = any row that TrackingPresence considers feed-worthy
+        //   (may include stale rows that are not currently live)
+        final trackedRows = scopedLiveRows
+            .where((r) => TrackingPresence.evaluate(r).shouldAppearInFeed)
+            .toList(growable: false);
+        final liveNowRows = scopedLiveRows
+            .where((r) => TrackingPresence.evaluate(r).isLive)
+            .toList(growable: false);
 
-          final canFallback = !widget.liveOnly;
-          final filteredLiveRows =
-              widget.liveOnly ? liveNowRows : scopedLiveRows;
+        // ── 3. Determine rendering mode ───────────────────────────────────────
+        //
+        //  offlineHistoryOnly → always show offline-history pins
+        //  liveOnly           → show only the current-live rows
+        //  default            → live rows; fall back to offline history;
+        //                       then fall back to last-known positions.
 
-          final showHistoryFallback = canFallback &&
-              filteredLiveRows.isEmpty &&
-              filteredHistoryRows.isNotEmpty;
+        // Wait for history to load when we must show it
+        if (widget.offlineHistoryOnly &&
+            historyAsync.isLoading &&
+            historyAsync.valueOrNull == null) {
+          return const Center(child: CircularProgressIndicator());
+        }
 
-          final showLastKnownFallback = canFallback &&
-              filteredLiveRows.isEmpty &&
-              filteredHistoryRows.isEmpty &&
-              trackedRows.isNotEmpty;
+        final canFallback = !widget.liveOnly;
 
-          final useOfflineHistory =
-              widget.offlineHistoryOnly || showHistoryFallback;
+        // Live rows that currently have an up-to-date GPS ping
+        final filteredLiveRows = widget.liveOnly
+            ? liveNowRows // strict: only truly live
+            : scopedLiveRows; // relaxed: all scoped rows
 
-          final List<TechnicianLocation> locations;
-          if (useOfflineHistory) {
-            locations = extractOfflineHistoryLocations(
-                scopedLiveRows, filteredHistoryRows);
-          } else if (showLastKnownFallback) {
-            locations = extractLastKnownLocations(trackedRows);
-          } else {
-            locations = extractLocations(filteredLiveRows);
-          }
+        final showHistoryFallback = canFallback &&
+            filteredLiveRows.isEmpty &&
+            filteredHistoryRows.isNotEmpty;
 
-          final markers = buildMarkers(locations);
+        final showLastKnownFallback = canFallback &&
+            filteredLiveRows.isEmpty &&
+            filteredHistoryRows.isEmpty &&
+            trackedRows.isNotEmpty;
 
-          final historyPolylines = buildHistoryPolylines(
-            filteredHistoryRows,
-            locations,
-            useOfflineHistory || showLastKnownFallback,
-            strictLiveSession: !(useOfflineHistory || showLastKnownFallback),
-          );
+        final useOfflineHistory =
+            widget.offlineHistoryOnly || showHistoryFallback;
 
-          final markerHash =
-              Object.hashAll(locations.map((location) => location.markerKey));
-          if (markerHash != lastMarkerHash) {
-            lastMarkerHash = markerHash;
-            cameraFramed = false;
-          }
+        // ── 4. Extract locations ───────────────────────────────────────────────
+        final List<TechnicianLocation> locations;
+        if (useOfflineHistory) {
+          locations = extractOfflineHistoryLocations(
+              scopedLiveRows, filteredHistoryRows);
+        } else if (showLastKnownFallback) {
+          locations = extractLastKnownLocations(trackedRows);
+        } else {
+          locations = extractLocations(filteredLiveRows);
+        }
 
-          if (selectedLocation != null) {
-            selectedLocation = findLocationByMarkerKey(
-              locations,
-              selectedLocation!.markerKey,
-            );
-          }
+        // ── 5. Build markers + polylines ──────────────────────────────────────
+        final markers = buildMarkers(locations);
 
-          if (locations.isEmpty) {
-            return Center(
-              child: Padding(
-                padding: const EdgeInsets.all(20),
-                child: Text(
-                  widget.liveOnly
-                      ? trackedRows.isEmpty
-                          ? 'No technician is active right now.'
-                          : 'Waiting for a fresh location update...'
-                      : useOfflineHistory && widget.jobIdFilter != null
-                          ? 'No offline location history found for Job ${widget.jobIdFilter}.'
-                          : 'No valid technician coordinates available yet.',
-                  textAlign: TextAlign.center,
-                ),
+        final historyPolylines = buildHistoryPolylines(
+          filteredHistoryRows,
+          locations,
+          useOfflineHistory || showLastKnownFallback,
+          strictLiveSession: !(useOfflineHistory || showLastKnownFallback),
+        );
+
+        // ── 6. Invalidate camera framing when the set of markers changes ───────
+        final markerHash = Object.hashAll(locations.map((l) => l.markerKey));
+        if (markerHash != lastMarkerHash) {
+          lastMarkerHash = markerHash;
+          cameraFramed = false;
+        }
+
+        // Keep selectedLocation reference live
+        if (selectedLocation != null) {
+          selectedLocation = findLocationByMarkerKey(
+              locations, selectedLocation!.markerKey);
+        }
+
+        // ── 7. Empty state ────────────────────────────────────────────────────
+        if (locations.isEmpty) {
+          return Center(
+            child: Padding(
+              padding: const EdgeInsets.all(20),
+              child: Text(
+                widget.liveOnly
+                    ? trackedRows.isEmpty
+                        ? 'No technician is active right now.'
+                        : 'Waiting for a fresh location update…'
+                    : useOfflineHistory && widget.jobIdFilter != null
+                        ? 'No offline location history found for Job ${widget.jobIdFilter}.'
+                        : 'No valid technician coordinates available yet.',
+                textAlign: TextAlign.center,
               ),
-            );
-          }
+            ),
+          );
+        }
 
-          WidgetsBinding.instance
-              .addPostFrameCallback((_) => fitCamera(locations));
+        WidgetsBinding.instance
+            .addPostFrameCallback((_) => fitCamera(locations));
 
-          return Stack(
-            children: [
-              FlutterMap(
-                mapController: mapController,
-                options: MapOptions(
-                  initialCenter: TechnicianMapLogic.defaultCenter,
-                  initialZoom: 11,
-                  interactionOptions: const InteractionOptions(
-                    flags: InteractiveFlag.all & ~InteractiveFlag.rotate,
-                  ),
-                  onTap: (_, __) => setState(() => selectedLocation = null),
-                  onMapReady: () {
-                    mapReady = true;
-                    fitCamera(locations, force: true);
-                  },
+        // ── 8. Map UI ─────────────────────────────────────────────────────────
+        return Stack(
+          children: [
+            // ── FlutterMap ───────────────────────────────────────────────────
+            FlutterMap(
+              mapController: mapController,
+              options: MapOptions(
+                initialCenter: TechnicianMapLogic.defaultCenter,
+                initialZoom: 11,
+                interactionOptions: const InteractionOptions(
+                  flags: InteractiveFlag.all & ~InteractiveFlag.rotate,
                 ),
-                children: [
+                onTap: (_, __) => setState(() => selectedLocation = null),
+                onMapReady: () {
+                  mapReady = true;
+                  fitCamera(locations, force: true);
+                },
+              ),
+              children: [
+                // Base tile layer
+                TileLayer(
+                  urlTemplate: activeLayer.urlTemplate,
+                  subdomains: List<String>.of(
+                    activeLayer.subdomains ?? const <String>[],
+                  ),
+                  userAgentPackageName:
+                      TechnicianMapLogic.userAgentPackageName,
+                  maxZoom: 20,
+                  maxNativeZoom: 19,
+                ),
+                // Label overlay for Hybrid mode
+                if (activeLayer.needsLabelOverlay)
                   TileLayer(
-                    urlTemplate: activeLayer.urlTemplate,
-                    subdomains: List<String>.of(activeLayer.subdomains),
+                    urlTemplate:
+                        'https://server.arcgisonline.com/ArcGIS/rest/services/'
+                        'Reference/World_Boundaries_and_Places/MapServer/tile/{z}/{y}/{x}',
                     userAgentPackageName:
                         TechnicianMapLogic.userAgentPackageName,
                     maxZoom: 20,
                     maxNativeZoom: 19,
                   ),
-                  if (activeLayer.needsLabelOverlay)
-                    TileLayer(
-                      urlTemplate:
-                          'https://server.arcgisonline.com/ArcGIS/rest/services/'
-                          'Reference/World_Boundaries_and_Places/MapServer/tile/{z}/{y}/{x}',
-                      userAgentPackageName:
-                          TechnicianMapLogic.userAgentPackageName,
-                      maxZoom: 20,
-                      maxNativeZoom: 19,
-                    ),
-                  if (historyPolylines.isNotEmpty)
-                    PolylineLayer(polylines: historyPolylines),
-                  MarkerLayer(markers: markers),
-                  RichAttributionWidget(
-                    attributions: [
-                      TextSourceAttribution(activeLayer.attribution),
-                    ],
-                  ),
-                ],
-              ),
-              if (selectedLocation != null)
-                Positioned(
-                  left: 16,
-                  right: 16,
-                  bottom: 88,
-                  child: _SelectedLocationCard(
-                    location: selectedLocation!,
-                    markerLabel: markerLabel(selectedLocation!),
-                    markerColor: colorForTrackingKey(
-                      primaryTrackingKeyForLocation(selectedLocation!),
-                    ),
-                    timeAgoLabel: timeAgo(selectedLocation!.updatedAt),
-                    syncPillLabel: syncPillLabel(
-                      selectedLocation!.updatedAt,
-                      isOfflineHistory: selectedLocation!.isOfflineHistory,
-                    ),
-                    syncPillColor: syncPillColor(
-                      selectedLocation!.updatedAt,
-                      isOfflineHistory: selectedLocation!.isOfflineHistory,
-                    ),
-                    sourcePillColor: sourcePillColor(selectedLocation!),
-                    isArchivedHistory: isArchivedHistory(selectedLocation!),
-                    hasDisplayValue: hasDisplayValue,
-                    titleCase: titleCase,
-                    onClose: () => setState(() => selectedLocation = null),
-                  ),
+                // Route trails
+                if (historyPolylines.isNotEmpty)
+                  PolylineLayer(polylines: historyPolylines),
+                // Technician pins
+                MarkerLayer(markers: markers),
+                // Attribution
+                RichAttributionWidget(
+                  attributions: [
+                    TextSourceAttribution(activeLayer.attribution),
+                  ],
                 ),
+              ],
+            ),
+
+            // ── Selected-location info card ───────────────────────────────────
+            if (selectedLocation != null)
               Positioned(
-                top: 14,
-                left: 14,
-                right: 14,
-                child: _TopStatusBar(
-                  locationCount: locations.length,
-                  liveOnly: widget.liveOnly,
-                  offlineHistoryOnly: widget.offlineHistoryOnly,
-                  useOfflineHistory: useOfflineHistory,
-                  showLastKnownFallback: showLastKnownFallback,
-                  jobIdFilter: widget.jobIdFilter,
-                  onRefresh: () =>
-                      unawaited(refreshMapData(forceHistory: true)),
-                ),
-              ),
-              Positioned(
-                top: 80,
-                right: 14,
-                child: _MapLayerPicker(
-                  active: activeLayer,
-                  onSelected: (layer) => setState(() => activeLayer = layer),
-                ),
-              ),
-              Positioned(
+                left: 16,
                 right: 16,
-                bottom: 20,
-                child: FloatingActionButton(
-                  mini: true,
-                  tooltip: 'Re-centre map',
-                  onPressed: () => fitCamera(locations, force: true),
-                  child: const Icon(Icons.my_location),
+                bottom: 88,
+                child: _SelectedLocationCard(
+                  location: selectedLocation!,
+                  markerLabel: markerLabel(selectedLocation!),
+                  markerColor: colorForTrackingKey(
+                      primaryTrackingKeyForLocation(selectedLocation!)),
+                  timeAgoLabel: timeAgo(selectedLocation!.updatedAt),
+                  syncPillLabel: syncPillLabel(
+                    selectedLocation!.updatedAt,
+                    isOfflineHistory: selectedLocation!.isOfflineHistory,
+                  ),
+                  syncPillColor: syncPillColor(
+                    selectedLocation!.updatedAt,
+                    isOfflineHistory: selectedLocation!.isOfflineHistory,
+                  ),
+                  sourcePillColor: sourcePillColor(selectedLocation!),
+                  isArchivedHistory: isArchivedHistory(selectedLocation!),
+                  hasDisplayValue: hasDisplayValue,
+                  titleCase: titleCase,
+                  onClose: () => setState(() => selectedLocation = null),
                 ),
               ),
-            ],
-          );
-        },
-      ),
+
+            // ── Top status bar ────────────────────────────────────────────────
+            Positioned(
+              top: 14,
+              left: 14,
+              right: 14,
+              child: _TopStatusBar(
+                locationCount: locations.length,
+                liveOnly: widget.liveOnly,
+                offlineHistoryOnly: widget.offlineHistoryOnly,
+                useOfflineHistory: useOfflineHistory,
+                showLastKnownFallback: showLastKnownFallback,
+                jobIdFilter: widget.jobIdFilter,
+                onRefresh: () =>
+                    unawaited(refreshMapData(forceHistory: true)),
+              ),
+            ),
+
+            // ── Map-layer picker ──────────────────────────────────────────────
+            Positioned(
+              top: 80,
+              right: 14,
+              child: _MapLayerPicker(
+                active: activeLayer,
+                onSelected: (layer) =>
+                    setState(() => activeLayer = layer),
+              ),
+            ),
+
+            // ── Re-centre FAB ─────────────────────────────────────────────────
+            Positioned(
+              right: 16,
+              bottom: 20,
+              child: FloatingActionButton(
+                mini: true,
+                tooltip: 'Re-centre map',
+                onPressed: () => fitCamera(locations, force: true),
+                child: const Icon(Icons.my_location),
+              ),
+            ),
+          ],
+        );
+      }),
     );
   }
 }
 
+// ─────────────────────────────────────────────
+// _SelectedLocationCard
+// ─────────────────────────────────────────────
 class _SelectedLocationCard extends StatelessWidget {
   const _SelectedLocationCard({
     required this.location,
@@ -365,6 +428,7 @@ class _SelectedLocationCard extends StatelessWidget {
           crossAxisAlignment: CrossAxisAlignment.start,
           mainAxisSize: MainAxisSize.min,
           children: [
+            // Header
             Row(
               children: [
                 Container(
@@ -414,7 +478,10 @@ class _SelectedLocationCard extends StatelessWidget {
                 ),
               ],
             ),
+
             const SizedBox(height: 10),
+
+            // Status pills
             Wrap(
               spacing: 8,
               runSpacing: 8,
@@ -433,7 +500,10 @@ class _SelectedLocationCard extends StatelessWidget {
                 ),
               ],
             ),
+
             const SizedBox(height: 10),
+
+            // Detail rows
             _MapDetailRow(
               icon: Icons.badge_outlined,
               label: 'Technician ID',
@@ -461,7 +531,8 @@ class _SelectedLocationCard extends StatelessWidget {
               icon: Icons.pin_drop_outlined,
               label: 'Coordinates',
               value:
-                  '${location.latLng.latitude.toStringAsFixed(5)}, ${location.latLng.longitude.toStringAsFixed(5)}',
+                  '${location.latLng.latitude.toStringAsFixed(5)}, '
+                  '${location.latLng.longitude.toStringAsFixed(5)}',
             ),
           ],
         ),
@@ -470,6 +541,9 @@ class _SelectedLocationCard extends StatelessWidget {
   }
 }
 
+// ─────────────────────────────────────────────
+// _TopStatusBar
+// ─────────────────────────────────────────────
 class _TopStatusBar extends StatelessWidget {
   const _TopStatusBar({
     required this.locationCount,
@@ -490,12 +564,12 @@ class _TopStatusBar extends StatelessWidget {
   final VoidCallback onRefresh;
 
   String _label() {
-    if (offlineHistoryOnly) return 'Job $jobIdFilter - offline history';
+    if (offlineHistoryOnly) return 'Job $jobIdFilter – offline history';
     if (liveOnly) return '$locationCount live technician(s) on map';
     if (useOfflineHistory) {
       return jobIdFilter == null
-          ? '$locationCount technician(s) - offline history'
-          : 'Job $jobIdFilter - offline history';
+          ? '$locationCount technician(s) – offline history'
+          : 'Job $jobIdFilter – offline history';
     }
     if (showLastKnownFallback) {
       return '$locationCount last-synced technician(s) on map';
@@ -521,10 +595,8 @@ class _TopStatusBar extends StatelessWidget {
         padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
         child: Row(
           children: [
-            const Icon(
-              Icons.engineering_outlined,
-              color: Color(0xFF2563EB),
-            ),
+            const Icon(Icons.engineering_outlined,
+                color: Color(0xFF2563EB)),
             const SizedBox(width: 8),
             Expanded(
               child: Text(
@@ -547,6 +619,9 @@ class _TopStatusBar extends StatelessWidget {
   }
 }
 
+// ─────────────────────────────────────────────
+// _MapLayerPicker
+// ─────────────────────────────────────────────
 class _MapLayerPicker extends StatefulWidget {
   const _MapLayerPicker({
     required this.active,
@@ -569,6 +644,7 @@ class _MapLayerPickerState extends State<_MapLayerPicker> {
       crossAxisAlignment: CrossAxisAlignment.end,
       mainAxisSize: MainAxisSize.min,
       children: [
+        // Toggle button
         GestureDetector(
           onTap: () => setState(() => _expanded = !_expanded),
           child: Container(
@@ -592,6 +668,7 @@ class _MapLayerPickerState extends State<_MapLayerPicker> {
             ),
           ),
         ),
+
         if (_expanded) ...[
           const SizedBox(height: 8),
           Container(
@@ -618,9 +695,7 @@ class _MapLayerPickerState extends State<_MapLayerPicker> {
                   child: Container(
                     width: 130,
                     padding: const EdgeInsets.symmetric(
-                      horizontal: 12,
-                      vertical: 10,
-                    ),
+                        horizontal: 12, vertical: 10),
                     decoration: BoxDecoration(
                       color: isActive
                           ? const Color(0xFF2563EB).withValues(alpha: 0.08)
@@ -641,8 +716,9 @@ class _MapLayerPickerState extends State<_MapLayerPicker> {
                           layer.label,
                           style: TextStyle(
                             fontSize: 13,
-                            fontWeight:
-                                isActive ? FontWeight.w700 : FontWeight.w500,
+                            fontWeight: isActive
+                                ? FontWeight.w700
+                                : FontWeight.w500,
                             color: isActive
                                 ? const Color(0xFF2563EB)
                                 : const Color(0xFF0F172A),
@@ -650,11 +726,8 @@ class _MapLayerPickerState extends State<_MapLayerPicker> {
                         ),
                         if (isActive) ...[
                           const Spacer(),
-                          const Icon(
-                            Icons.check,
-                            size: 16,
-                            color: Color(0xFF2563EB),
-                          ),
+                          const Icon(Icons.check,
+                              size: 16, color: Color(0xFF2563EB)),
                         ],
                       ],
                     ),
@@ -669,6 +742,9 @@ class _MapLayerPickerState extends State<_MapLayerPicker> {
   }
 }
 
+// ─────────────────────────────────────────────
+// _MapInfoPill
+// ─────────────────────────────────────────────
 class _MapInfoPill extends StatelessWidget {
   const _MapInfoPill({required this.label, required this.color});
 
@@ -695,6 +771,9 @@ class _MapInfoPill extends StatelessWidget {
   }
 }
 
+// ─────────────────────────────────────────────
+// _MapDetailRow
+// ─────────────────────────────────────────────
 class _MapDetailRow extends StatelessWidget {
   const _MapDetailRow({
     required this.icon,

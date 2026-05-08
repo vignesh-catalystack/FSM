@@ -267,7 +267,6 @@ class _TechnicianDashboardState extends ConsumerState<TechnicianDashboard>
 
   @override
   void dispose() {
-    unawaited(ref.read(technicianTrackingServiceProvider).stopTracking());
     _jobsRefreshTimer?.cancel();
     _notificationTimer?.cancel();
     WidgetsBinding.instance.removeObserver(this);

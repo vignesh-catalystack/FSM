@@ -12,9 +12,9 @@ class TechnicianTrackingService {
   static const Duration _pendingFlushInterval = Duration(seconds: 30);
   static const int _maxSyncBatchSize = 25;
   static const Duration _heartbeatInterval = Duration(seconds: 45);
-  static const Duration _movingInterval = Duration(seconds: 10);
+  static const Duration _movingInterval = Duration(seconds: 4);
+  static const Duration _fastMovingInterval = Duration(seconds: 2);
   static const Duration _stationaryInterval = Duration(seconds: 20);
-  static const Duration _fastMovingInterval = Duration(seconds: 6);
   static const double _movingDistanceMeters = 8;
   static const double _stationaryDistanceMeters = 12;
   static const double _fastMovingDistanceMeters = 20;
@@ -144,16 +144,16 @@ class TechnicianTrackingService {
     if (_disposed) return;
     if (_activeJobId == jobId && _positionSubscription != null) return;
 
-    await stopTracking();
-    _activeJobId = jobId;
-    _startPendingFlushTimer();
-
     final locationEnabled = await Geolocator.isLocationServiceEnabled();
     if (!locationEnabled) {
       throw Exception('Please enable location service for live tracking.');
     }
 
     final settings = _resolveLocationSettings();
+    await stopTracking();
+    _activeJobId = jobId;
+    _queuedPosition = null;
+    _startPendingFlushTimer();
     _positionSubscription = Geolocator.getPositionStream(
       locationSettings: settings,
     ).listen(
@@ -190,6 +190,7 @@ class TechnicianTrackingService {
     _activeJobId = null;
     _lastSentPosition = null;
     _lastSentAt = null;
+    _queuedPosition = null;
   }
 
   Future<void> dispose() async {
@@ -306,9 +307,8 @@ class TechnicianTrackingService {
     try {
       final queue = await TrackingCacheStore.readPendingSync();
       if (queue.isEmpty) return;
-
-      final batch = queue.take(_maxSyncBatchSize).toList(growable: false);
-      final untouched = queue.skip(_maxSyncBatchSize).toList(growable: false);
+      final batch = queue.take(_maxSyncBatchSize).toList();
+      final untouched = queue.skip(_maxSyncBatchSize).toList();
 
       final remaining = <Map<String, dynamic>>[];
       for (var i = 0; i < batch.length; i++) {

@@ -1,5 +1,4 @@
 import 'dart:async';
-import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
 import 'package:flutter_map/flutter_map.dart';
@@ -8,10 +7,15 @@ import 'package:latlong2/latlong.dart';
 
 import 'package:fsm/features/jobs/application/job_controller.dart';
 import 'package:fsm/features/jobs/application/tracking_presence.dart';
-import 'animated_marker_widget.dart';
 import 'technician_map_models.dart';
 
-abstract class TechnicianLocationsMapScreenBase extends ConsumerStatefulWidget {
+// ─────────────────────────────────────────────
+// Abstract widget base
+// The mixin constraint (W extends …Base) lets the
+// mixin access widget properties such as jobIdFilter.
+// ─────────────────────────────────────────────
+abstract class TechnicianLocationsMapScreenBase
+    extends ConsumerStatefulWidget {
   const TechnicianLocationsMapScreenBase({super.key});
 
   int? get jobIdFilter;
@@ -23,11 +27,15 @@ abstract class TechnicianLocationsMapScreenBase extends ConsumerStatefulWidget {
   List<Map<String, dynamic>>? get seedRows;
 }
 
+// ─────────────────────────────────────────────
+// Mixin: TechnicianMapLogic
+// ─────────────────────────────────────────────
 mixin TechnicianMapLogic<W extends TechnicianLocationsMapScreenBase>
     on ConsumerState<W> {
+  // ── constants ─────────────────────────────────────────────────────────────
   static const Duration liveRefreshInterval = Duration(seconds: 8);
   static const Duration historyRefreshInterval = Duration(seconds: 32);
-  static const LatLng defaultCenter = LatLng(12.9716, 77.5946);
+  static const LatLng defaultCenter = LatLng(12.9716, 77.5946); // Bengaluru
   static const String userAgentPackageName = 'com.example.fsm';
 
   static const List<Color> technicianPalette = <Color>[
@@ -41,8 +49,7 @@ mixin TechnicianMapLogic<W extends TechnicianLocationsMapScreenBase>
     Color(0xFFBE185D),
   ];
 
-  final Map<String, LatLng> _prevPositions = <String, LatLng>{};
-
+  // ── mutable state owned by the mixin ─────────────────────────────────────
   final MapController mapController = MapController();
   Timer? refreshTimer;
   TechnicianLocation? selectedLocation;
@@ -53,6 +60,7 @@ mixin TechnicianMapLogic<W extends TechnicianLocationsMapScreenBase>
   bool refreshInProgress = false;
   MapLayerType activeLayer = MapLayerType.standard;
 
+  // ── lifecycle helpers ─────────────────────────────────────────────────────
   void initLogic() {
     refreshTimer = Timer.periodic(liveRefreshInterval, (_) {
       if (!shouldAutoRefresh()) return;
@@ -64,6 +72,8 @@ mixin TechnicianMapLogic<W extends TechnicianLocationsMapScreenBase>
     refreshTimer?.cancel();
     mapController.dispose();
   }
+
+  // ── primitive coercers ────────────────────────────────────────────────────
 
   String asText(dynamic value, {String fallback = '-'}) {
     if (value == null) return fallback;
@@ -92,6 +102,8 @@ mixin TechnicianMapLogic<W extends TechnicianLocationsMapScreenBase>
     return int.tryParse(value.toString());
   }
 
+  // ── display helpers ───────────────────────────────────────────────────────
+
   String timeAgo(dynamic value) {
     final date = asDateTime(value)?.toLocal();
     if (date == null) return 'Unknown';
@@ -115,7 +127,9 @@ mixin TechnicianMapLogic<W extends TechnicianLocationsMapScreenBase>
     if (!isOfflineHistory && isTrackingFresh(value)) {
       return const Color(0xFF0F9D58);
     }
-    return isOfflineHistory ? const Color(0xFF64748B) : const Color(0xFFB45309);
+    return isOfflineHistory
+        ? const Color(0xFF64748B)
+        : const Color(0xFFB45309);
   }
 
   Color sourcePillColor(TechnicianLocation location) {
@@ -156,24 +170,7 @@ mixin TechnicianMapLogic<W extends TechnicianLocationsMapScreenBase>
   double distanceMeters(LatLng a, LatLng b) =>
       const Distance().as(LengthUnit.Meter, a, b);
 
-  bool _shouldAnimate(LatLng prev, LatLng next) {
-    final distance = distanceMeters(prev, next);
-    if (distance < 5) return false;
-    if (distance > 800) return false;
-    return true;
-  }
-
-  double _calculateBearing(LatLng a, LatLng b) {
-    final lat1 = a.latitude * math.pi / 180;
-    final lat2 = b.latitude * math.pi / 180;
-    final dLon = (b.longitude - a.longitude) * math.pi / 180;
-
-    final y = math.sin(dLon) * math.cos(lat2);
-    final x = math.cos(lat1) * math.sin(lat2) -
-        math.sin(lat1) * math.cos(lat2) * math.cos(dLon);
-
-    return math.atan2(y, x);
-  }
+  // ── refresh logic ─────────────────────────────────────────────────────────
 
   bool shouldAutoRefresh() {
     if (!mounted || refreshInProgress) return false;
@@ -206,6 +203,8 @@ mixin TechnicianMapLogic<W extends TechnicianLocationsMapScreenBase>
     }
   }
 
+  // ── tracking-key helpers ──────────────────────────────────────────────────
+
   String buildCompositeTrackingKey(int? technicianId, int? jobId) =>
       'tech:${technicianId ?? '-'}|job:${jobId ?? '-'}';
 
@@ -225,8 +224,8 @@ mixin TechnicianMapLogic<W extends TechnicianLocationsMapScreenBase>
   String markerLabel(TechnicianLocation location) {
     final parts = location.technicianName
         .split(RegExp(r'\s+'))
-        .where((part) => part.trim().isNotEmpty)
-        .toList();
+        .where((p) => p.trim().isNotEmpty)
+        .toList(growable: false);
     if (parts.length >= 2) {
       return '${parts.first[0]}${parts.last[0]}'.toUpperCase();
     }
@@ -238,29 +237,7 @@ mixin TechnicianMapLogic<W extends TechnicianLocationsMapScreenBase>
     return 'TE';
   }
 
-  bool matchesFilters(Map<String, dynamic> row) {
-    final jobId = asInt(row['job_id']);
-    final technicianId = asInt(row['technician_id']);
-    if (widget.jobIdFilter != null && jobId != widget.jobIdFilter) {
-      return false;
-    }
-    if (widget.technicianIdFilter != null &&
-        technicianId != widget.technicianIdFilter) {
-      return false;
-    }
-    return true;
-  }
-
-  bool rowShouldAppearInFeed(Map<String, dynamic> row) =>
-      TrackingPresence.evaluate(row).shouldAppearInFeed;
-
-  bool rowIsLive(Map<String, dynamic> row) {
-    final snapshot = TrackingPresence.evaluate(row);
-    if (snapshot.isLive) return true;
-    return row['is_live'] == true ||
-        row['is_live'] == 1 ||
-        row['is_live'] == '1';
-  }
+  // ── deduplication ─────────────────────────────────────────────────────────
 
   List<Map<String, dynamic>> dedupeRowsByTrackingKey(
     List<Map<String, dynamic>> rows, {
@@ -285,7 +262,7 @@ mixin TechnicianMapLogic<W extends TechnicianLocationsMapScreenBase>
       if (rowAt.isAfter(currentAt)) latestByKey[key] = row;
     }
 
-    final deduped = latestByKey.values.toList()
+    final deduped = latestByKey.values.toList(growable: false)
       ..sort((a, b) {
         final aAt = asDateTime(a[timestampField]) ??
             DateTime.fromMillisecondsSinceEpoch(0);
@@ -297,14 +274,18 @@ mixin TechnicianMapLogic<W extends TechnicianLocationsMapScreenBase>
     return deduped;
   }
 
-  List<TechnicianLocation> extractLocations(List<Map<String, dynamic>> rows) {
+  // ── location extraction ───────────────────────────────────────────────────
+
+  /// Builds [TechnicianLocation] list from the live-tracking rows.
+  List<TechnicianLocation> extractLocations(
+      List<Map<String, dynamic>> rows) {
     final result = <TechnicianLocation>[];
 
     for (final row in rows) {
-      if (!rowIsLive(row)) continue;
       final lat = asDouble(row['latitude']);
       final lng = asDouble(row['longitude']);
       if (lat == null || lng == null) continue;
+      // Discard (0, 0) sentinel coordinates
       if (lat == 0.0 && lng == 0.0) continue;
 
       final technicianId = asInt(row['technician_id']);
@@ -317,28 +298,26 @@ mixin TechnicianMapLogic<W extends TechnicianLocationsMapScreenBase>
         technicianFallbackKey: buildTechnicianFallbackKey(technicianId),
         technicianId: technicianId,
         jobId: jobId,
-        technicianName: asText(row['technician_name'], fallback: 'Technician'),
-        jobTitle: asText(row['job_title'], fallback: 'No job assigned'),
-        jobStatus: asText(row['job_status'] ?? row['status']),
+        technicianName:
+            asText(row['technician_name'], fallback: 'Technician'),
+        jobTitle:
+            asText(row['job_title'], fallback: 'No job assigned'),
+        jobStatus: asText(row['status']),
         trackingStatus: asText(row['tracking_status']),
-        updatedAt: asDateTime(row['updated_at']) ??
-            DateTime.fromMillisecondsSinceEpoch(0),
-        isLive: true,
+        updatedAt: row['updated_at'],
         isOfflineHistory: false,
         sourceLabel: 'Live now',
         latLng: LatLng(lat, lng),
-        speed: asDouble(row['speed']),
-        accuracy: asDouble(row['accuracy']),
-        bearing: asDouble(row['bearing']),
       ));
     }
 
     return result;
   }
 
+  /// Picks the single most-recent row per composite key from [rows] and
+  /// returns them as "Last synced" locations (used when live data is absent).
   List<TechnicianLocation> extractLastKnownLocations(
-    List<Map<String, dynamic>> rows,
-  ) {
+      List<Map<String, dynamic>> rows) {
     final latestByKey = <String, Map<String, dynamic>>{};
 
     for (final row in rows) {
@@ -375,37 +354,37 @@ mixin TechnicianMapLogic<W extends TechnicianLocationsMapScreenBase>
         technicianFallbackKey: buildTechnicianFallbackKey(technicianId),
         technicianId: technicianId,
         jobId: jobId,
-        technicianName: asText(row['technician_name'], fallback: 'Technician'),
-        jobTitle: asText(row['job_title'], fallback: 'No job assigned'),
-        jobStatus: asText(row['job_status'] ?? row['status']),
+        technicianName:
+            asText(row['technician_name'], fallback: 'Technician'),
+        jobTitle:
+            asText(row['job_title'], fallback: 'No job assigned'),
+        jobStatus: asText(row['status']),
         trackingStatus: asText(row['tracking_status']),
-        updatedAt: asDateTime(row['updated_at']) ??
-            DateTime.fromMillisecondsSinceEpoch(0),
-        isLive: false,
+        updatedAt: row['updated_at'],
         isOfflineHistory: true,
         sourceLabel: 'Last synced',
         latLng: LatLng(lat, lng),
-        speed: asDouble(row['speed']),
-        accuracy: asDouble(row['accuracy']),
-        bearing: asDouble(row['bearing']),
       ));
     }
 
     result.sort((a, b) {
-      final aAt =
-          asDateTime(a.updatedAt) ?? DateTime.fromMillisecondsSinceEpoch(0);
-      final bAt =
-          asDateTime(b.updatedAt) ?? DateTime.fromMillisecondsSinceEpoch(0);
+      final aAt = asDateTime(a.updatedAt) ??
+          DateTime.fromMillisecondsSinceEpoch(0);
+      final bAt = asDateTime(b.updatedAt) ??
+          DateTime.fromMillisecondsSinceEpoch(0);
       return bAt.compareTo(aAt);
     });
 
     return result;
   }
 
+  /// Merges offline [historyRows] with metadata from [liveRows] to produce
+  /// "Offline history" pins — one per composite key, most-recent point wins.
   List<TechnicianLocation> extractOfflineHistoryLocations(
     List<Map<String, dynamic>> liveRows,
     List<Map<String, dynamic>> historyRows,
   ) {
+    // Build a metadata lookup from live rows (name, job title, status …)
     final metadataByKey = <String, Map<String, dynamic>>{};
     for (final row in liveRows) {
       final technicianId = asInt(row['technician_id']);
@@ -418,6 +397,7 @@ mixin TechnicianMapLogic<W extends TechnicianLocationsMapScreenBase>
       }
     }
 
+    // Pick the newest history point per effective key
     final latestHistoryByKey = <String, Map<String, dynamic>>{};
     for (final row in historyRows) {
       final lat = asDouble(row['latitude']);
@@ -430,6 +410,7 @@ mixin TechnicianMapLogic<W extends TechnicianLocationsMapScreenBase>
       final compositeKey = buildCompositeTrackingKey(technicianId, jobId);
       final fallbackKey = buildTechnicianFallbackKey(technicianId);
 
+      // Prefer composite key; fall back to technician-only key
       final String effectiveKey;
       if (metadataByKey.containsKey(compositeKey)) {
         effectiveKey = compositeKey;
@@ -457,10 +438,12 @@ mixin TechnicianMapLogic<W extends TechnicianLocationsMapScreenBase>
       final lng = asDouble(point['longitude']);
       if (lat == null || lng == null) continue;
 
-      final metadata = metadataByKey[entry.key] ?? const <String, dynamic>{};
+      final metadata =
+          metadataByKey[entry.key] ?? const <String, dynamic>{};
       final technicianId =
           asInt(point['technician_id']) ?? asInt(metadata['technician_id']);
-      final jobId = asInt(point['job_id']) ?? asInt(metadata['job_id']);
+      final jobId =
+          asInt(point['job_id']) ?? asInt(metadata['job_id']);
       final trackingKey = buildCompositeTrackingKey(technicianId, jobId);
 
       result.add(TechnicianLocation(
@@ -477,17 +460,11 @@ mixin TechnicianMapLogic<W extends TechnicianLocationsMapScreenBase>
           metadata['job_title'],
           fallback: widget.jobTitleHint ?? 'Job $jobId',
         ),
-        jobStatus: asText(
-          metadata['job_status'] ?? metadata['status'],
-          fallback: 'Offline history',
-        ),
-        trackingStatus: asText(
-          metadata['tracking_status'],
-          fallback: 'Offline history',
-        ),
-        updatedAt: asDateTime(point['captured_at'] ?? metadata['updated_at']) ??
-            DateTime.fromMillisecondsSinceEpoch(0),
-        isLive: false,
+        jobStatus:
+            asText(metadata['status'], fallback: 'Offline history'),
+        trackingStatus: asText(metadata['tracking_status'],
+            fallback: 'Offline history'),
+        updatedAt: point['captured_at'] ?? metadata['updated_at'],
         isOfflineHistory: true,
         sourceLabel: 'Offline history',
         latLng: LatLng(lat, lng),
@@ -495,15 +472,17 @@ mixin TechnicianMapLogic<W extends TechnicianLocationsMapScreenBase>
     }
 
     result.sort((a, b) {
-      final aAt =
-          asDateTime(a.updatedAt) ?? DateTime.fromMillisecondsSinceEpoch(0);
-      final bAt =
-          asDateTime(b.updatedAt) ?? DateTime.fromMillisecondsSinceEpoch(0);
+      final aAt = asDateTime(a.updatedAt) ??
+          DateTime.fromMillisecondsSinceEpoch(0);
+      final bAt = asDateTime(b.updatedAt) ??
+          DateTime.fromMillisecondsSinceEpoch(0);
       return bAt.compareTo(aAt);
     });
 
     return result;
   }
+
+  // ── history / polyline helpers ────────────────────────────────────────────
 
   bool isSyntheticHistoryPoint(Map<String, dynamic> row) {
     final source = row['source']?.toString().trim().toLowerCase();
@@ -524,7 +503,7 @@ mixin TechnicianMapLogic<W extends TechnicianLocationsMapScreenBase>
       final capturedAt = asDateTime(point['captured_at'])?.toLocal();
       if (capturedAt == null) return false;
       return !capturedAt.isBefore(earliest) && !capturedAt.isAfter(latest);
-    }).toList();
+    }).toList(growable: false);
   }
 
   List<Polyline> buildHistoryPolylines(
@@ -537,15 +516,15 @@ mixin TechnicianMapLogic<W extends TechnicianLocationsMapScreenBase>
       return const <Polyline>[];
     }
 
+    // Build a fast lookup from key → location
     final byKey = <String, TechnicianLocation>{};
-    for (final location in activeLocations) {
-      byKey[location.trackingKey] = location;
-      final fallbackKey = location.technicianFallbackKey;
-      if (fallbackKey != null) {
-        byKey.putIfAbsent(fallbackKey, () => location);
-      }
+    for (final loc in activeLocations) {
+      byKey[loc.trackingKey] = loc;
+      final fb = loc.technicianFallbackKey;
+      if (fb != null) byKey.putIfAbsent(fb, () => loc);
     }
 
+    // Group history points by matched location key
     final grouped = <String, List<Map<String, dynamic>>>{};
     for (final row in historyRows) {
       if (strictLiveSession && isSyntheticHistoryPoint(row)) continue;
@@ -559,17 +538,14 @@ mixin TechnicianMapLogic<W extends TechnicianLocationsMapScreenBase>
       final jobId = asInt(row['job_id']);
       final compositeKey = buildCompositeTrackingKey(technicianId, jobId);
 
-      String? matchedKey =
-          byKey.containsKey(compositeKey) ? compositeKey : null;
+      String? matchedKey = byKey.containsKey(compositeKey) ? compositeKey : null;
       if (matchedKey == null && allowTechnicianFallback) {
-        final fallbackKey = buildTechnicianFallbackKey(technicianId);
-        if (fallbackKey != null && byKey.containsKey(fallbackKey)) {
-          matchedKey = fallbackKey;
-        }
+        final fb = buildTechnicianFallbackKey(technicianId);
+        if (fb != null && byKey.containsKey(fb)) matchedKey = fb;
       }
       if (matchedKey == null) continue;
 
-      grouped.putIfAbsent(matchedKey, () => <Map<String, dynamic>>[]).add(row);
+      grouped.putIfAbsent(matchedKey, () => []).add(row);
     }
 
     final polylines = <Polyline>[];
@@ -587,7 +563,7 @@ mixin TechnicianMapLogic<W extends TechnicianLocationsMapScreenBase>
             ? const Duration(hours: 12)
             : const Duration(minutes: 25),
         maxPoints: allowTechnicianFallback ? 120 : 60,
-      ).toList(growable: true);
+      );
 
       trimmed.sort((a, b) {
         final aAt = asDateTime(a['captured_at']) ??
@@ -597,12 +573,12 @@ mixin TechnicianMapLogic<W extends TechnicianLocationsMapScreenBase>
         return aAt.compareTo(bAt);
       });
 
-      final coordinates = cleanAndSimplifyPath(trimmed);
-      if (coordinates.length < 2) continue;
+      final coords = cleanAndSimplifyPath(trimmed);
+      if (coords.length < 2) continue;
 
       final colorKey = primaryTrackingKeyForLocation(location);
       polylines.add(Polyline(
-        points: coordinates,
+        points: coords,
         strokeWidth: 4,
         color: colorForTrackingKey(colorKey).withValues(alpha: 0.72),
       ));
@@ -611,6 +587,11 @@ mixin TechnicianMapLogic<W extends TechnicianLocationsMapScreenBase>
     return polylines;
   }
 
+  /// Removes GPS jitter and GPS-off-to-on jumps.
+  ///
+  /// * < 5 m  → stationary noise, skip.
+  /// * > 500 m → implausible jump (GPS re-acquire, tunnel exit, etc.), skip.
+  ///   Raise this threshold if technicians travel by vehicle on highways.
   List<LatLng> cleanAndSimplifyPath(List<Map<String, dynamic>> points) {
     final cleaned = <LatLng>[];
     LatLng? previous;
@@ -631,7 +612,7 @@ mixin TechnicianMapLogic<W extends TechnicianLocationsMapScreenBase>
         continue;
       }
 
-      final distance = distanceMeters(previous, current);
+      final d = distanceMeters(previous, current);
       final previousAt = asDateTime(previousPoint?['captured_at']);
       final currentAt = asDateTime(point['captured_at']);
       final elapsedSeconds = previousAt != null && currentAt != null
@@ -639,7 +620,9 @@ mixin TechnicianMapLogic<W extends TechnicianLocationsMapScreenBase>
           : 0;
       final maxReasonableDistance =
           (elapsedSeconds * 55.0 + 100).clamp(500.0, 5000.0);
-      if (distance >= 5 && distance <= maxReasonableDistance) {
+      // Keep points that represent genuine movement (≥5 m) but discard
+      // implausible teleports while allowing longer offline/time-gap jumps.
+      if (d >= 5 && d <= maxReasonableDistance) {
         cleaned.add(current);
         previous = current;
         previousPoint = point;
@@ -654,9 +637,9 @@ mixin TechnicianMapLogic<W extends TechnicianLocationsMapScreenBase>
     required Duration maxAge,
     required int maxPoints,
   }) {
-    if (points.isEmpty) return <Map<String, dynamic>>[];
+    if (points.isEmpty) return const [];
 
-    final sorted = points.toList()
+    final sorted = points.toList(growable: false)
       ..sort((a, b) {
         final aAt = asDateTime(a['captured_at']) ??
             DateTime.fromMillisecondsSinceEpoch(0);
@@ -673,10 +656,10 @@ mixin TechnicianMapLogic<W extends TechnicianLocationsMapScreenBase>
     }
 
     final threshold = latestAt.subtract(maxAge);
-    final recent = sorted.where((point) {
-      final capturedAt = asDateTime(point['captured_at']);
+    final recent = sorted.where((p) {
+      final capturedAt = asDateTime(p['captured_at']);
       return capturedAt == null || !capturedAt.isBefore(threshold);
-    }).toList();
+    }).toList(growable: false);
 
     if (recent.length <= maxPoints) return recent;
     return recent.sublist(recent.length - maxPoints);
@@ -702,10 +685,10 @@ mixin TechnicianMapLogic<W extends TechnicianLocationsMapScreenBase>
 
     if (route.isEmpty) return null;
 
-    final distanceToAnchor = distanceMeters(route.last, anchor);
-    if (distanceToAnchor > 5 && distanceToAnchor <= 150) {
+    final distToAnchor = distanceMeters(route.last, anchor);
+    if (distToAnchor > 5 && distToAnchor <= 150) {
       route.add(anchor);
-      totalDistance += distanceToAnchor;
+      totalDistance += distToAnchor;
     }
 
     if (route.length < minimumPointCount ||
@@ -716,10 +699,8 @@ mixin TechnicianMapLogic<W extends TechnicianLocationsMapScreenBase>
     return RouteMetrics(points: route);
   }
 
-  List<LatLng> downsamplePath(
-    List<LatLng> points, {
-    required int maxPoints,
-  }) {
+  List<LatLng> downsamplePath(List<LatLng> points,
+      {required int maxPoints}) {
     if (points.length <= maxPoints) return points;
     final stride = (points.length / maxPoints).ceil();
     final sampled = <LatLng>[];
@@ -735,148 +716,90 @@ mixin TechnicianMapLogic<W extends TechnicianLocationsMapScreenBase>
     return sampled;
   }
 
+  // ── marker helpers ────────────────────────────────────────────────────────
+
   TechnicianLocation? findLocationByMarkerKey(
     List<TechnicianLocation> locations,
     String markerKey,
   ) {
-    for (final location in locations) {
-      if (location.markerKey == markerKey) return location;
+    for (final loc in locations) {
+      if (loc.markerKey == markerKey) return loc;
     }
     return null;
   }
 
   List<Marker> buildMarkers(List<TechnicianLocation> locations) {
-    _prevPositions.removeWhere(
-      (key, _) => !locations.any((location) => location.markerKey == key),
-    );
-
     return locations.map((location) {
       final color =
           colorForTrackingKey(primaryTrackingKeyForLocation(location));
-      final isSelected = selectedLocation?.markerKey == location.markerKey;
+      final isSelected =
+          selectedLocation?.markerKey == location.markerKey;
       final size = isSelected ? 38.0 : 34.0;
-      final previous = _prevPositions[location.markerKey];
-      final next = location.latLng;
-
-      final shouldAnimate = previous != null && _shouldAnimate(previous, next);
-      _prevPositions[location.markerKey] = next;
-
-      Widget markerUi({required LatLng position, double? angle}) {
-        Widget base = Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Container(
-              width: size,
-              height: size,
-              decoration: BoxDecoration(
-                color: color,
-                shape: BoxShape.circle,
-                border: Border.all(color: Colors.white, width: 2.6),
-                boxShadow: const [
-                  BoxShadow(
-                    color: Color(0x33000000),
-                    blurRadius: 12,
-                    offset: Offset(0, 6),
-                  ),
-                ],
-              ),
-              alignment: Alignment.center,
-              child: Text(
-                markerLabel(location),
-                style: const TextStyle(
-                  color: Colors.white,
-                  fontSize: 11,
-                  fontWeight: FontWeight.w800,
-                ),
-              ),
-            ),
-            Container(
-              width: 14,
-              height: 20,
-              decoration: BoxDecoration(
-                color: color,
-                borderRadius: const BorderRadius.vertical(
-                  bottom: Radius.circular(14),
-                ),
-              ),
-            ),
-            Container(
-              width: 8,
-              height: 8,
-              decoration: const BoxDecoration(
-                color: Colors.white,
-                shape: BoxShape.circle,
-              ),
-            ),
-          ],
-        );
-
-        final resolvedAngle = angle ??
-            (location.bearing != null
-                ? location.bearing! * math.pi / 180
-                : previous != null
-                    ? _calculateBearing(previous, next)
-                    : null);
-        if (resolvedAngle != null) {
-          base = Transform.rotate(angle: resolvedAngle, child: base);
-        }
-
-        return GestureDetector(
-          onTap: () => setState(() => selectedLocation = location),
-          child: Builder(
-            builder: (context) {
-              final camera = MapCamera.maybeOf(context);
-              var offset = Offset.zero;
-              if (camera != null) {
-                final animatedOffset = camera.getOffsetFromOrigin(position);
-                final anchorOffset = camera.getOffsetFromOrigin(next);
-                offset = animatedOffset - anchorOffset;
-              }
-
-              return OverflowBox(
-                minWidth: 0,
-                minHeight: 0,
-                maxWidth: double.infinity,
-                maxHeight: double.infinity,
-                alignment: Alignment.center,
-                child: Transform.translate(
-                  offset: offset,
-                  child: base,
-                ),
-              );
-            },
-          ),
-        );
-      }
-
-      if (previous == null || !shouldAnimate) {
-        return Marker(
-          key: ValueKey(location.markerKey),
-          point: next,
-          width: 72,
-          height: 76,
-          child: markerUi(position: next),
-        );
-      }
 
       return Marker(
         key: ValueKey(location.markerKey),
-        point: next,
+        point: location.latLng,
         width: 72,
         height: 76,
-        child: AnimatedMarkerWidget(
-          key: ValueKey(location.markerKey),
-          position: next,
-          previous: previous,
-          speed: location.speed,
-          builder: (position, bearing) => markerUi(
-            position: position,
-            angle: bearing,
+        child: GestureDetector(
+          onTap: () => setState(() => selectedLocation = location),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              // Circle avatar
+              Container(
+                width: size,
+                height: size,
+                decoration: BoxDecoration(
+                  color: color,
+                  shape: BoxShape.circle,
+                  border: Border.all(color: Colors.white, width: 2.6),
+                  boxShadow: const [
+                    BoxShadow(
+                      color: Color(0x33000000),
+                      blurRadius: 12,
+                      offset: Offset(0, 6),
+                    ),
+                  ],
+                ),
+                alignment: Alignment.center,
+                child: Text(
+                  markerLabel(location),
+                  style: const TextStyle(
+                    color: Colors.white,
+                    fontSize: 11,
+                    fontWeight: FontWeight.w800,
+                  ),
+                ),
+              ),
+              // Teardrop stem
+              Container(
+                width: 14,
+                height: 20,
+                decoration: BoxDecoration(
+                  color: color,
+                  borderRadius: const BorderRadius.vertical(
+                    bottom: Radius.circular(14),
+                  ),
+                ),
+              ),
+              // Tip dot
+              Container(
+                width: 8,
+                height: 8,
+                decoration: const BoxDecoration(
+                  color: Colors.white,
+                  shape: BoxShape.circle,
+                ),
+              ),
+            ],
           ),
         ),
       );
     }).toList();
   }
+
+  // ── camera ────────────────────────────────────────────────────────────────
 
   void fitCamera(List<TechnicianLocation> locations, {bool force = false}) {
     if (!mapReady || locations.isEmpty) return;
@@ -887,7 +810,7 @@ mixin TechnicianMapLogic<W extends TechnicianLocationsMapScreenBase>
     } else {
       mapController.fitCamera(
         CameraFit.coordinates(
-          coordinates: locations.map((location) => location.latLng).toList(),
+          coordinates: locations.map((l) => l.latLng).toList(),
           padding: const EdgeInsets.all(56),
           maxZoom: 16,
         ),

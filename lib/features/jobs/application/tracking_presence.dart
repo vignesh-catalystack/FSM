@@ -32,7 +32,7 @@ class TrackingSnapshot {
 class TrackingPresence {
   const TrackingPresence._();
 
-  static const Duration freshnessWindow = Duration(minutes: 2);
+  static const Duration freshnessWindow = Duration(seconds: 90);
 
   static const Set<String> _activeStatuses = <String>{
     'accepted',

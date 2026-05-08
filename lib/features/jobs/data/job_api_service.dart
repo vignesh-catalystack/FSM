@@ -39,7 +39,6 @@ class JobApiService {
 
   static const List<String> _adminSummaryEndpoints = [
     'jobs/admin_summary.php',
-    'jobs/dashboard_summary.php',
   ];
 
   static const List<String> _adminJobsEndpoints = [
@@ -402,7 +401,7 @@ Map<String, dynamic> _normalizeLiveRow(Map<String, dynamic> row) {
       }
     }
 
-    final deduped = latestByKey.values.toList(growable: false);
+    final deduped = latestByKey.values.toList();
     deduped.sort((a, b) {
       final aUpdatedAt = TrackingPresence.parseDateTime(a['updated_at']) ??
           DateTime.fromMillisecondsSinceEpoch(0);
@@ -450,7 +449,7 @@ Map<String, dynamic> _normalizeLiveRow(Map<String, dynamic> row) {
   ) {
     return rows
         .where((row) => !_isSyntheticHistoryRow(row))
-        .toList(growable: false);
+        .toList();
   }
 
   bool _shouldIncludeInLiveTracking(Map<String, dynamic> row) {
@@ -480,7 +479,7 @@ Map<String, dynamic> _normalizeLiveRow(Map<String, dynamic> row) {
             .where(
               (item) => item is! Map<String, dynamic> || !_isDeletedRow(item),
             )
-            .toList(growable: false);
+            .toList();
       }
       if (data is Map<String, dynamic>) {
         if (response.statusCode != 200) {
@@ -495,7 +494,7 @@ Map<String, dynamic> _normalizeLiveRow(Map<String, dynamic> row) {
               .where(
                 (item) => item is! Map<String, dynamic> || !_isDeletedRow(item),
               )
-              .toList(growable: false);
+              .toList();
         }
         return [];
       }
@@ -827,7 +826,7 @@ Map<String, dynamic> _normalizeLiveRow(Map<String, dynamic> row) {
 
         final normalized = rows
             .map(_normalizeLiveRow)
-            .toList(growable: false);
+            .toList();
         final deduped = _dedupeLiveRows(normalized);
         if (deduped.isEmpty) {
           _preferredLiveEndpoint = endpoint;
@@ -855,7 +854,7 @@ Map<String, dynamic> _normalizeLiveRow(Map<String, dynamic> row) {
     if (cachedRows.isNotEmpty) {
       return cachedRows
           .map((row) => <String, dynamic>{...row, 'is_from_cache': true})
-          .toList(growable: false);
+          .toList();
     }
 
     throw Exception(
@@ -931,7 +930,7 @@ Map<String, dynamic> _normalizeLiveRow(Map<String, dynamic> row) {
         final normalized = rows
             .map(_normalizeHistoryPoint)
             .whereType<Map<String, dynamic>>()
-            .toList(growable: false);
+            .toList();
 
         _preferredHistoryEndpoint = endpoint;
         await TrackingCacheStore.cacheHistoryPoints(normalized);
@@ -973,12 +972,11 @@ Map<String, dynamic> _normalizeLiveRow(Map<String, dynamic> row) {
           headers: headers,
         );
         final data = _decodeBody(response.body);
-
-        if (!_isSuccess(response.statusCode)) {
-          if (response.statusCode == 404) {
-            notFoundEndpoints.add(endpoint);
-            continue;
-          }
+if (!_didRequestSucceed(
+  statusCode: response.statusCode,
+  body: response.body,
+  data: data,
+)) {
           final fallback = data is Map<String, dynamic>
               ? (data['message']?.toString() ?? 'HTTP ${response.statusCode}')
               : 'HTTP ${response.statusCode}';
@@ -986,29 +984,37 @@ Map<String, dynamic> _normalizeLiveRow(Map<String, dynamic> row) {
           continue;
         }
 
-        Map<String, dynamic>? payload;
-        if (data is Map<String, dynamic>) {
-          if (data['data'] is Map<String, dynamic>) {
-            payload =
-                Map<String, dynamic>.from(data['data'] as Map<String, dynamic>);
-          } else {
-            payload = Map<String, dynamic>.from(data);
-          }
-        }
+Map<String, dynamic>? payload;
 
-        if (payload == null) {
-          errors.add('$endpoint -> Invalid summary format');
-          continue;
-        }
+if (data is Map<String, dynamic>) {
+  final inner = data['data'];
 
-        return {
-          'total_users': _toInt(payload['total_users']),
-          'total_managers': _toInt(payload['total_managers']),
-          'total_technicians': _toInt(payload['total_technicians']),
-          'total_jobs': _toInt(payload['total_jobs']),
-          'completed_jobs': _toInt(payload['completed_jobs']),
-          'active_sessions': _toInt(payload['active_sessions']),
-        };
+  if (inner is Map && inner.isNotEmpty) {
+    payload = Map<String, dynamic>.from(inner);
+  }
+}
+
+// 🔥 HARD FAIL ONLY IF NO VALID DATA OBJECT
+if (payload == null) {
+  errors.add('$endpoint -> Invalid summary format (no data object)');
+  continue;
+}
+
+final totalUsers     = _toInt(_pickValue(payload, ['total_users',     'totalUsers',     'users']));
+final totalManagers  = _toInt(_pickValue(payload, ['total_managers',  'totalManagers',  'managers']));
+final totalTechs     = _toInt(_pickValue(payload, ['total_technicians','totalTechnicians','technicians']));
+final totalJobs      = _toInt(_pickValue(payload, ['total_jobs',      'totalJobs',      'jobs']));
+final completedJobs  = _toInt(_pickValue(payload, ['completed_jobs',  'completedJobs',  'completed']));
+final activeSessions = _toInt(_pickValue(payload, ['active_sessions', 'activeSessions', 'live_now', 'liveNow', 'active']));
+
+return {
+  'total_users':       totalUsers,
+  'total_managers':    totalManagers,
+  'total_technicians': totalTechs,
+  'total_jobs':        totalJobs,
+  'completed_jobs':    completedJobs,
+  'active_sessions':   activeSessions,
+};
       } catch (e) {
         errors.add('$endpoint -> $e');
       }
@@ -1017,7 +1023,6 @@ Map<String, dynamic> _normalizeLiveRow(Map<String, dynamic> row) {
     if (notFoundEndpoints.length == _adminSummaryEndpoints.length) {
       throw Exception(
         'Admin summary API not found on server. '
-        'Please create jobs/admin_summary.php.',
       );
     }
 
@@ -1108,11 +1113,11 @@ return <String, dynamic>{
   'battery': _pickInt(row, ['battery', 'battery_level']),       // ← ADD
   'is_charging': _pickInt(row, ['is_charging', 'charging']),    // ← ADD
 };
-        }).toList(growable: false);
+        }).toList();
 
         return normalized
             .where((row) => !_toBool(row['is_deleted']))
-            .toList(growable: false);
+            .toList();
       } catch (e) {
         errors.add('$endpoint -> $e');
       }
@@ -1319,14 +1324,14 @@ return <String, dynamic>{
             'deleted_at': _pickString(row, ['deleted_at', 'updated_at']) ?? '-',
             'status': _pickString(row, ['status', 'job_status']) ?? 'deleted',
           };
-        }).toList(growable: false);
+        }).toList();
       } catch (e) {
         errors.add('$endpoint -> $e');
       }
     }
 
     if (notFoundEndpoints.length == _deletedJobsEndpoints.length) {
-      return const <Map<String, dynamic>>[];
+      return <Map<String, dynamic>>[];
     }
 
     throw Exception(

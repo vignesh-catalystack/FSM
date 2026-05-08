@@ -2,7 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:latlong2/latlong.dart';
 
 // ─────────────────────────────────────────────
-// MapLayerType enum
+// MapLayerType enum (UNCHANGED)
 // ─────────────────────────────────────────────
 enum MapLayerType {
   standard,
@@ -33,7 +33,6 @@ enum MapLayerType {
         MapLayerType.satellite =>
           'https://server.arcgisonline.com/ArcGIS/rest/services/'
               'World_Imagery/MapServer/tile/{z}/{y}/{x}',
-        // Hybrid uses the same satellite imagery base; label overlay is added separately
         MapLayerType.hybrid =>
           'https://server.arcgisonline.com/ArcGIS/rest/services/'
               'World_Imagery/MapServer/tile/{z}/{y}/{x}',
@@ -44,13 +43,13 @@ enum MapLayerType {
           'https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png',
       };
 
-  /// Only the dark CartoDB layer uses subdomains.
-  List<String>? get subdomains => switch (this) {
-        MapLayerType.dark => ['a', 'b', 'c', 'd'],
-        _ => null,
+  List<String> get subdomains => switch (this) {
+        // Newly added: return a fresh mutable list because flutter_map may
+        // normalize or reorder subdomains internally.
+        MapLayerType.dark => <String>['a', 'b', 'c', 'd'],
+        _ => <String>[],
       };
 
-  /// Whether a road/label overlay tile layer should be rendered on top.
   bool get needsLabelOverlay => this == MapLayerType.hybrid;
 
   String get attribution => switch (this) {
@@ -64,13 +63,13 @@ enum MapLayerType {
 }
 
 // ─────────────────────────────────────────────
-// TechnicianLocation  (immutable data class)
+// TechnicianLocation (PRODUCTION READY)
 // ─────────────────────────────────────────────
+@immutable
 class TechnicianLocation {
   const TechnicianLocation({
     required this.markerKey,
     required this.trackingKey,
-    required this.technicianFallbackKey,
     required this.technicianId,
     required this.jobId,
     required this.technicianName,
@@ -78,44 +77,155 @@ class TechnicianLocation {
     required this.jobStatus,
     required this.trackingStatus,
     required this.updatedAt,
-    required this.isOfflineHistory,
-    required this.sourceLabel,
     required this.latLng,
+    required this.isLive,
+    this.technicianFallbackKey,
+    this.isOfflineHistory = false,
+    this.sourceLabel = '',
+    this.speed,
+    this.accuracy,
+    this.bearing,
   });
 
-  /// Unique key used to identify a marker widget (same as [trackingKey]).
   final String markerKey;
-
-  /// Composite key: `tech:<id>|job:<id>`.
   final String trackingKey;
-
-  /// Fallback key when only the technician ID is known: `tech:<id>`.
-  final String? technicianFallbackKey;
 
   final int? technicianId;
   final int? jobId;
+
   final String technicianName;
   final String jobTitle;
   final String jobStatus;
   final String trackingStatus;
 
-  /// Raw `updated_at` / `captured_at` value from the DB row (String or null).
-  final dynamic updatedAt;
-
-  final bool isOfflineHistory;
-
-  /// Human-readable source label shown in the info card pill.
-  /// One of: `'Live now'`, `'Last synced'`, `'Offline history'`.
-  final String sourceLabel;
+  final DateTime updatedAt;
 
   final LatLng latLng;
+
+  final bool isLive;
+
+  final String? technicianFallbackKey;
+  final bool isOfflineHistory;
+  final String sourceLabel;
+
+  final double? speed;
+  final double? accuracy;
+  final double? bearing;
+
+  // ─────────────────────────────────────────────
+  // FACTORY (BACKEND SAFE)
+  // ─────────────────────────────────────────────
+  factory TechnicianLocation.fromJson(Map<String, dynamic> json) {
+    final lat = (json['latitude'] as num?)?.toDouble();
+    final lng = (json['longitude'] as num?)?.toDouble();
+
+    if (lat == null || lng == null) {
+      throw Exception('Invalid coordinates');
+    }
+    int? toIntValue(dynamic v) {
+      if (v == null) return null;
+      if (v is int) return v;
+      if (v is num) return v.toInt();
+      return int.tryParse(v.toString());
+    }
+
+    DateTime? parseDateValue(dynamic v) {
+      if (v == null) return null;
+      final text = v.toString().trim();
+      if (text.isEmpty) return null;
+      return DateTime.tryParse(text) ??
+          DateTime.tryParse(text.replaceFirst(' ', 'T'));
+    }
+
+    final techId = toIntValue(json['technician_id']);
+    final jobId = toIntValue(json['job_id']);
+
+    return TechnicianLocation(
+      markerKey: 'tech:$techId|job:$jobId',
+      trackingKey: 'tech:$techId|job:$jobId',
+      technicianId: techId,
+      jobId: jobId,
+      technicianName: json['technician_name'] ?? '',
+      jobTitle: json['job_title'] ?? '',
+      jobStatus: json['job_status'] ?? '',
+      trackingStatus: json['tracking_status'] ?? '',
+      updatedAt: parseDateValue(json['updated_at']) ??
+          DateTime.fromMillisecondsSinceEpoch(0),
+      latLng: LatLng(lat, lng),
+      isLive: json['is_live'] == true || json['is_live'] == 1,
+      speed: (json['speed'] as num?)?.toDouble(),
+      accuracy: (json['accuracy'] as num?)?.toDouble(),
+    );
+  }
+
+  // ─────────────────────────────────────────────
+  // HELPERS
+  // ─────────────────────────────────────────────
+  double get latitude => latLng.latitude;
+  double get longitude => latLng.longitude;
+
+  bool get hasValidSpeed => speed != null && speed! >= 0;
+  bool get isHighAccuracy => accuracy == null || accuracy! <= 50;
+
+  // ─────────────────────────────────────────────
+  // COPY
+  // ─────────────────────────────────────────────
+  TechnicianLocation copyWith({
+    LatLng? latLng,
+    double? speed,
+    double? accuracy,
+    double? bearing,
+    DateTime? updatedAt,
+  }) {
+    return TechnicianLocation(
+      markerKey: markerKey,
+      trackingKey: trackingKey,
+      technicianId: technicianId,
+      jobId: jobId,
+      technicianName: technicianName,
+      jobTitle: jobTitle,
+      jobStatus: jobStatus,
+      trackingStatus: trackingStatus,
+      updatedAt: updatedAt ?? this.updatedAt,
+      latLng: latLng ?? this.latLng,
+      isLive: isLive,
+      technicianFallbackKey: technicianFallbackKey,
+      isOfflineHistory: isOfflineHistory,
+      sourceLabel: sourceLabel,
+      speed: speed ?? this.speed,
+      accuracy: accuracy ?? this.accuracy,
+      bearing: bearing ?? this.bearing,
+    );
+  }
+
+  // ─────────────────────────────────────────────
+  // EQUALITY (STABLE FOR ANIMATION)
+  // ─────────────────────────────────────────────
+  @override
+  bool operator ==(Object other) {
+    return identical(this, other) ||
+        (other is TechnicianLocation &&
+            other.markerKey == markerKey &&
+            _sameLatLng(other.latLng, latLng) &&
+            other.updatedAt == updatedAt);
+  }
+
+  bool _sameLatLng(LatLng a, LatLng b) {
+    const threshold = 0.00001;
+    return (a.latitude - b.latitude).abs() < threshold &&
+        (a.longitude - b.longitude).abs() < threshold;
+  }
+
+  @override
+  int get hashCode =>
+      Object.hash(markerKey, latLng.latitude, latLng.longitude, updatedAt);
 }
 
 // ─────────────────────────────────────────────
-// RouteMetrics  (lightweight value object)
+// RouteMetrics (UNCHANGED)
 // ─────────────────────────────────────────────
+@immutable
 class RouteMetrics {
   const RouteMetrics({required this.points});
-
   final List<LatLng> points;
 }

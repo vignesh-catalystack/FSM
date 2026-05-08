@@ -853,9 +853,10 @@ class _AdminDashboardState extends ConsumerState<AdminDashboard>
       final liveRows = next.valueOrNull ?? const <Map<String, dynamic>>[];
       _updateLiveRowsIndex(liveRows);
       
-      final liveCount = _buildTrackingFeed(liveRows, []).where(
-        (row) => !_asBool(row['is_offline_history'])
-      ).length;
+final liveCount = liveRows.where((row) {
+  final snapshot = TrackingPresence.evaluate(row);
+  return snapshot.isLive;
+}).length;
       
       if (_lastLiveCount != liveCount) {
         _lastLiveCount = liveCount;
@@ -896,8 +897,7 @@ class _AdminDashboardState extends ConsumerState<AdminDashboard>
     final rawLiveRows =
         liveTrackingAsync.valueOrNull ?? const <Map<String, dynamic>>[];
     
-    // Update index when data changes
-    _updateLiveRowsIndex(rawLiveRows);
+    
     
     final assignmentRows =
         jobAssignmentsAsync.valueOrNull ?? const <Map<String, dynamic>>[];
@@ -947,7 +947,7 @@ class _AdminDashboardState extends ConsumerState<AdminDashboard>
                         ? null
                         : () => _refreshDashboard(showFeedback: true),
                     onCreateJob: _showCreateJobDialog,
-                    onOpenLiveMap: () => _openLiveMap(liveRows),
+                    onOpenLiveMap: () => _openLiveMap(rawLiveRows),
                     metrics: [
                       const _OverviewMetric(
                         label: 'Jobs',
@@ -1300,7 +1300,7 @@ class _AdminDashboardState extends ConsumerState<AdminDashboard>
                       mainAxisSize: MainAxisSize.min,
                       children: [
                         IconButton(
-                          onPressed: () => _openLiveMap(liveRows),
+                          onPressed: () => _openLiveMap(rawLiveRows),
                           icon: const Icon(Icons.map_outlined),
                           tooltip: 'View on map',
                         ),

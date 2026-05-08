@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:battery_plus/battery_plus.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:fsm/core/auth/auth_notifier.dart';
+import 'package:fsm/core/auth/auth_state.dart';
 import 'package:fsm/core/config/app_api_config.dart';
 import 'package:fsm/core/services/permission_service.dart';
 import 'package:fsm/features/jobs/data/job_api_service.dart';
@@ -68,6 +69,14 @@ final technicianTrackingServiceProvider = Provider<TechnicianTrackingService>(
       tokenProvider: () => ref.read(authProvider).token,
       onLocationSynced: () => ref.invalidate(adminTechnicianLiveProvider),
     );
+    ref.listen<AuthState>(authProvider, (previous, next) {
+      final lostSession = next.token == null;
+      if (lostSession) {
+        // Newly added: tracking now belongs to the provider lifecycle instead
+        // of a dashboard widget lifecycle, so session loss stops it centrally.
+        unawaited(service.stopTracking());
+      }
+    });
     ref.onDispose(() {
       unawaited(service.dispose());
     });

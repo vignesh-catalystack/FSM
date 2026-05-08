@@ -44,7 +44,7 @@ dependencies:
   # ----------------------------------------------------------
   geolocator: ^11.0.0
   # google_maps_flutter: ^2.7.0  # Disabled: migrated to flutter_map (no Google Maps API key required for OSM tiles)
-  flutter_map: ^6.1.0
+  flutter_map: ^6.0.0
   latlong2: ^0.9.1
   shared_preferences: ^2.3.2
 
