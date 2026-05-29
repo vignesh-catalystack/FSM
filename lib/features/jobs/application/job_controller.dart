@@ -37,7 +37,15 @@ final adminTechnicianHistoryProvider =
     return api.getTechnicianLocationHistory(token: authState.token);
   },
 );
+final adminTechnicianLastProvider =
+    FutureProvider<List<Map<String, dynamic>>>((ref) async {
+  final authState = ref.watch(authProvider);
+  final api = ref.read(jobApiServiceProvider); 
 
+  return api.getLastLocations(
+    token: authState.token,
+  );
+});
 final adminDashboardSummaryProvider = FutureProvider<Map<String, dynamic>>(
   (ref) async {
     final authState = ref.watch(authProvider);
@@ -67,13 +75,14 @@ final technicianTrackingServiceProvider = Provider<TechnicianTrackingService>(
     final service = TechnicianTrackingService(
       apiProvider: () => ref.read(jobApiServiceProvider),
       tokenProvider: () => ref.read(authProvider).token,
-      onLocationSynced: () => ref.invalidate(adminTechnicianLiveProvider),
+      onLocationSynced: () {
+        // 🛠️ FIX: Force immediate refresh across both providers to sync paths with pins
+        ref.invalidate(adminTechnicianLiveProvider);
+      },
     );
     ref.listen<AuthState>(authProvider, (previous, next) {
       final lostSession = next.token == null;
       if (lostSession) {
-        // Newly added: tracking now belongs to the provider lifecycle instead
-        // of a dashboard widget lifecycle, so session loss stops it centrally.
         unawaited(service.stopTracking());
       }
     });
@@ -121,59 +130,49 @@ class JobActionController {
       rethrow;
     }
   }
+Future<Map<String, dynamic>> acceptJobAndShareLocation({
+  required int jobId,
+}) async {
 
-  Future<String> acceptJobAndShareLocation({required int jobId}) async {
-    final granted = await _permissionService.requestLocationPermission();
-    if (!granted) {
-      throw Exception('Location permission is required to accept a job.');
-    }
+  final authState = ref.read(authProvider);
+  final api = ref.read(jobApiServiceProvider);
 
-    final locationEnabled = await Geolocator.isLocationServiceEnabled();
-    if (!locationEnabled) {
-      throw Exception('Please enable device location and try again.');
-    }
+  // Stop any previous tracking session
+  await ref
+      .read(technicianTrackingServiceProvider)
+      .stopTracking();
 
-    var geoPermission = await Geolocator.checkPermission();
-    if (geoPermission == LocationPermission.denied) {
-      geoPermission = await Geolocator.requestPermission();
-    }
+  // ACCEPT JOB FIRST
+final position = await _resolveAcceptPosition();
 
-    if (geoPermission == LocationPermission.denied ||
-        geoPermission == LocationPermission.deniedForever) {
-      throw Exception('Location permission denied.');
-    }
+final batterySnapshot = await _readBatterySnapshot();
 
-    Position position;
-    try {
-      position = await _resolveAcceptPosition();
-    } on TimeoutException {
-      throw Exception(
-        'Unable to get current GPS quickly. Please move to open area and try again.',
-      );
-    }
+final response = await api.acceptJobWithLocation(
+  token: authState.token,
+  jobId: jobId,
+  latitude: position.latitude,
+  longitude: position.longitude,
+  battery: batterySnapshot.battery,
+  isCharging: batterySnapshot.isCharging,
+);
 
-    final authState = ref.read(authProvider);
-    final api = ref.read(jobApiServiceProvider);
-    final batteryInfo = await _readBatterySnapshot();
+final sessionId =
+    (response['session_id'] as num?)?.toInt();
 
-    final message = await api.acceptJobWithLocation(
-      token: authState.token,
-      jobId: jobId,
-      latitude: position.latitude,
-      longitude: position.longitude,
-      battery: batteryInfo.battery,
-      isCharging: batteryInfo.isCharging,
-    );
-
-    try {
-      await ref
-          .read(technicianTrackingServiceProvider)
-          .startTracking(jobId: jobId);
-    } catch (e) {
-      return '$message Live tracking warning: ${e.toString().replaceFirst('Exception: ', '')}';
-    }
-    return message;
-  }
+  // START TRACKING ONLY AFTER SUCCESS
+  await ref
+      .read(technicianTrackingServiceProvider)
+      .startTracking(
+  jobId: jobId,
+  sessionId: sessionId,
+);
+  // Refresh providers
+  ref.invalidate(myJobsProvider);
+  ref.invalidate(adminTechnicianLiveProvider);
+  ref.invalidate(adminTechnicianHistoryProvider);
+  ref.invalidate(adminTechnicianLastProvider);
+return response;
+}
 
   Future<String> finishJobAndStopTracking({required int jobId}) async {
     final authState = ref.read(authProvider);
@@ -195,7 +194,9 @@ class JobActionController {
         await tracker.stopTracking();
         return;
       }
-      await tracker.startTracking(jobId: activeJobId);
+await tracker.startTracking(
+  jobId: activeJobId,
+);
     } catch (_) {
       // Dashboard sync should not block UI on transient location issues.
     }
@@ -220,3 +221,14 @@ class JobActionController {
     );
   }
 }
+final adminTechnicianHistoryByJobProvider =
+    FutureProvider.family<List<Map<String, dynamic>>, int?>(
+  (ref, jobId) async {
+    final authState = ref.watch(authProvider);
+    final api = ref.read(jobApiServiceProvider);
+    return api.getTechnicianLocationHistory(
+      token: authState.token,
+      jobId: jobId,
+    );
+  },
+);

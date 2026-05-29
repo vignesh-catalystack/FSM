@@ -4,7 +4,7 @@ import 'dart:math' as math;
 import 'package:flutter/material.dart';
 import 'package:flutter_map/flutter_map.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:latlong2/latlong.dart'; 
+import 'package:latlong2/latlong.dart';
 
 import 'package:fsm/features/jobs/application/job_controller.dart';
 import 'package:fsm/features/jobs/application/tracking_presence.dart';
@@ -37,18 +37,12 @@ class _LiveRoutePoint {
 
 mixin TechnicianMapLogic<W extends TechnicianLocationsMapScreenBase>
     on ConsumerState<W> {
-  static const Duration liveRefreshInterval = Duration(seconds: 2);
+  static const Duration liveRefreshInterval = Duration(seconds: 5);
   static const Duration historyRefreshInterval = Duration(seconds: 10);
   static const LatLng defaultCenter = LatLng(12.9716, 77.5946);
   static const String userAgentPackageName = 'com.example.fsm';
   static const Duration liveTrailMaxAge = Duration(hours: 24);
   static const int liveTrailMaxPoints = 5000;
-
-  // FIX: Accuracy thresholds separated by concern
-  // Live streaming: strict (GPS must be tight)
-  static const double _liveAccuracyThresholdMeters = 20.0;
-  // History / offline path: relaxed (older hardware, indoors)
-  static const double _historyAccuracyThresholdMeters = 60.0;
 
   static const List<Color> technicianPalette = <Color>[
     Color(0xFF2563EB),
@@ -88,10 +82,6 @@ mixin TechnicianMapLogic<W extends TechnicianLocationsMapScreenBase>
     refreshTimer?.cancel();
     mapController.dispose();
   }
-
-  // ─────────────────────────────────────────────────────
-  // HELPERS
-  // ─────────────────────────────────────────────────────
 
   String asText(dynamic value, {String fallback = '-'}) {
     if (value == null) return fallback;
@@ -151,9 +141,11 @@ mixin TechnicianMapLogic<W extends TechnicianLocationsMapScreenBase>
 
   void _rememberRouteBearing(TechnicianLocation location, List<LatLng> route) {
     if (route.length < 2) return;
+
     final bearing = _calculateBearing(route[route.length - 2], route.last);
     _routeBearingRadiansByKey[location.markerKey] = bearing;
     _routeBearingRadiansByKey[location.trackingKey] = bearing;
+
     final fallbackKey = location.technicianFallbackKey;
     if (fallbackKey != null) {
       _routeBearingRadiansByKey[fallbackKey] = bearing;
@@ -234,8 +226,10 @@ mixin TechnicianMapLogic<W extends TechnicianLocationsMapScreenBase>
 
   bool _shouldAnimate(LatLng prev, LatLng next) {
     final distance = distanceMeters(prev, next);
-    if (distance < 1) return false;
-    if (distance > 300) return false;
+
+    if (distance < 1) return false; // Ignore jitter.
+    if (distance > 300) return false; // Ignore GPS spikes.
+
     return true;
   }
 
@@ -243,9 +237,11 @@ mixin TechnicianMapLogic<W extends TechnicianLocationsMapScreenBase>
     final lat1 = a.latitude * math.pi / 180;
     final lat2 = b.latitude * math.pi / 180;
     final dLon = (b.longitude - a.longitude) * math.pi / 180;
+
     final y = math.sin(dLon) * math.cos(lat2);
     final x = math.cos(lat1) * math.sin(lat2) -
         math.sin(lat1) * math.cos(lat2) * math.cos(dLon);
+
     return math.atan2(y, x);
   }
 
@@ -254,10 +250,6 @@ mixin TechnicianMapLogic<W extends TechnicianLocationsMapScreenBase>
     if (updatedAt.isBefore(DateTime(2000))) return DateTime.now();
     return updatedAt;
   }
-
-  // ─────────────────────────────────────────────────────
-  // LIVE TRAIL
-  // ─────────────────────────────────────────────────────
 
   void syncLiveRouteTrails(List<TechnicianLocation> locations) {
     final activeLiveKeys = locations
@@ -285,10 +277,7 @@ mixin TechnicianMapLogic<W extends TechnicianLocationsMapScreenBase>
   }
 
   void _appendLiveRoutePoint(TechnicianLocation location) {
-    // FIX: Use the dedicated live accuracy threshold (was 35m, now uses constant)
-    if (location.accuracy != null &&
-        location.accuracy! > _liveAccuracyThresholdMeters) return;
-
+     if (location.accuracy != null && location.accuracy! > 35) return; // ← add this
     final trail = _liveTrailByKey.putIfAbsent(
       location.trackingKey,
       () => <_LiveRoutePoint>[],
@@ -307,14 +296,16 @@ mixin TechnicianMapLogic<W extends TechnicianLocationsMapScreenBase>
     final last = trail.last;
     final distance = distanceMeters(last.latLng, point.latLng);
 
-    if (distance < 0.3) {
+    if (distance < 0.8) {
       if (point.capturedAt.isAfter(last.capturedAt)) {
         trail[trail.length - 1] = point;
       }
       return;
     }
 
-    if (distance > 600) return;
+    if (distance > 600) {
+      return;
+    }
 
     trail.add(point);
     _trimLiveRouteTrail(trail);
@@ -323,6 +314,7 @@ mixin TechnicianMapLogic<W extends TechnicianLocationsMapScreenBase>
   void _trimLiveRouteTrail(List<_LiveRoutePoint> trail) {
     final threshold = DateTime.now().subtract(liveTrailMaxAge);
     trail.removeWhere((point) => point.capturedAt.isBefore(threshold));
+
     if (trail.length > liveTrailMaxPoints) {
       trail.removeRange(0, trail.length - liveTrailMaxPoints);
     }
@@ -339,15 +331,12 @@ mixin TechnicianMapLogic<W extends TechnicianLocationsMapScreenBase>
       route.add(point);
       return;
     }
+
     final distance = distanceMeters(route.last, point);
     if (distance < minDistanceMeters) return;
     if (distance > maxGapMeters) return;
     route.add(point);
   }
-
-  // ─────────────────────────────────────────────────────
-  // REFRESH
-  // ─────────────────────────────────────────────────────
 
   bool shouldAutoRefresh() {
     if (!mounted || refreshInProgress) return false;
@@ -380,10 +369,6 @@ mixin TechnicianMapLogic<W extends TechnicianLocationsMapScreenBase>
     }
   }
 
-  // ─────────────────────────────────────────────────────
-  // KEY BUILDERS
-  // ─────────────────────────────────────────────────────
-
   String buildCompositeTrackingKey(int? technicianId, int? jobId) =>
       'tech:${technicianId ?? '-'}|job:${jobId ?? '-'}';
 
@@ -415,10 +400,6 @@ mixin TechnicianMapLogic<W extends TechnicianLocationsMapScreenBase>
     if (id != null) return 'T$id';
     return 'TE';
   }
-
-  // ─────────────────────────────────────────────────────
-  // FILTER / FEED
-  // ─────────────────────────────────────────────────────
 
   bool matchesFilters(Map<String, dynamic> row) {
     final jobId = asInt(row['job_id']);
@@ -475,10 +456,6 @@ mixin TechnicianMapLogic<W extends TechnicianLocationsMapScreenBase>
 
     return deduped;
   }
-
-  // ─────────────────────────────────────────────────────
-  // LOCATION EXTRACTION
-  // ─────────────────────────────────────────────────────
 
   List<TechnicianLocation> extractLocations(List<Map<String, dynamic>> rows) {
     final result = <TechnicianLocation>[];
@@ -605,7 +582,6 @@ mixin TechnicianMapLogic<W extends TechnicianLocationsMapScreenBase>
     for (final row in historyRows) {
       final lat = asDouble(row['latitude']);
       final lng = asDouble(row['longitude']);
-      // FIX: Allow points even with null accuracy
       if (lat == null || lng == null) continue;
       if (lat == 0.0 && lng == 0.0) continue;
 
@@ -641,7 +617,7 @@ mixin TechnicianMapLogic<W extends TechnicianLocationsMapScreenBase>
       final lng = asDouble(point['longitude']);
       if (lat == null || lng == null) continue;
 
-      final metadata = metadataByKey[entry.key] ?? point;
+      final metadata = metadataByKey[entry.key] ?? const <String, dynamic>{};
       final technicianId =
           asInt(point['technician_id']) ?? asInt(metadata['technician_id']);
       final jobId = asInt(point['job_id']) ?? asInt(metadata['job_id']);
@@ -669,15 +645,14 @@ mixin TechnicianMapLogic<W extends TechnicianLocationsMapScreenBase>
           metadata['tracking_status'],
           fallback: 'Offline history',
         ),
-        updatedAt:
-            asDateTime(point['captured_at'] ?? metadata['updated_at']) ??
-                DateTime.fromMillisecondsSinceEpoch(0),
+        updatedAt: asDateTime(point['captured_at'] ?? metadata['updated_at']) ??
+            DateTime.fromMillisecondsSinceEpoch(0),
         isLive: false,
         isOfflineHistory: true,
         sourceLabel: 'Offline history',
         latLng: LatLng(lat, lng),
         speed: asDouble(point['speed'] ?? metadata['speed']),
-        accuracy: asDouble(point['accuracy'] ?? metadata['accuracy']), // Allow null
+        accuracy: asDouble(point['accuracy'] ?? metadata['accuracy']),
         bearing: readBearing(point) ?? readBearing(metadata),
       ));
     }
@@ -693,23 +668,132 @@ mixin TechnicianMapLogic<W extends TechnicianLocationsMapScreenBase>
     return result;
   }
 
-  // ─────────────────────────────────────────────────────
-  // ROUTE PATH BUILDERS
-  // ─────────────────────────────────────────────────────
-
   bool isSyntheticHistoryPoint(Map<String, dynamic> row) {
     final source = row['source']?.toString().trim().toLowerCase();
     return source == 'live_snapshot';
   }
 
-  /// FIX: Removed the strict 25-minute window that was silently dropping
-  /// offline history points. Just return all points — trimRouteHistory
-  /// enforces the age window downstream.
-  List<Map<String, dynamic>> restrictHistoryToLiveSession(
-    List<Map<String, dynamic>> points,
-    TechnicianLocation location,
-  ) {
-    return points;
+  // List<Map<String, dynamic>> restrictHistoryToLiveSession(
+  //   List<Map<String, dynamic>> points,
+  //   TechnicianLocation location,
+  // ) {
+  //   final anchorAt = asDateTime(location.updatedAt)?.toLocal();
+  //   if (anchorAt == null) return points;
+
+  //   final earliest = anchorAt.subtract(const Duration(minutes: 25));
+  //   final latest = anchorAt.add(const Duration(minutes: 30));
+
+  //   return points.where((point) {
+  //     final capturedAt = asDateTime(point['captured_at'])?.toLocal();
+  //     if (capturedAt == null) return false;
+  //     return !capturedAt.isBefore(earliest) && !capturedAt.isAfter(latest);
+  //   }).toList();
+  // }
+List<Map<String, dynamic>> restrictHistoryToLiveSession(
+  List<Map<String, dynamic>> points,
+  TechnicianLocation location,
+) {
+  return points;
+}
+  List<List<LatLng>> buildHistoryRoutePaths(
+    List<Map<String, dynamic>> historyRows,
+    List<TechnicianLocation> activeLocations,
+    bool allowTechnicianFallback, {
+    required bool strictLiveSession,
+  }) {
+    if (historyRows.isEmpty || activeLocations.isEmpty) {
+      return const <List<LatLng>>[];
+    }
+
+    final byKey = <String, TechnicianLocation>{};
+    for (final location in activeLocations) {
+      byKey[location.trackingKey] = location;
+      final fallbackKey = location.technicianFallbackKey;
+      if (fallbackKey != null) {
+        byKey.putIfAbsent(fallbackKey, () => location);
+      }
+    }
+
+    final grouped = <String, List<Map<String, dynamic>>>{};
+    for (final row in historyRows) {
+      if (strictLiveSession && isSyntheticHistoryPoint(row)) continue;
+
+      final lat = asDouble(row['latitude']);
+      final lng = asDouble(row['longitude']);
+      if (lat == null || lng == null) continue;
+      if (lat == 0.0 && lng == 0.0) continue;
+
+      final technicianId = asInt(row['technician_id']);
+      final jobId = asInt(row['job_id']);
+      final compositeKey = buildCompositeTrackingKey(technicianId, jobId);
+
+      String? matchedKey =
+          byKey.containsKey(compositeKey) ? compositeKey : null;
+      if (matchedKey == null && allowTechnicianFallback) {
+        final fallbackKey = buildTechnicianFallbackKey(technicianId);
+        if (fallbackKey != null && byKey.containsKey(fallbackKey)) {
+          matchedKey = fallbackKey;
+        }
+      }
+      if (matchedKey == null) continue;
+
+      grouped.putIfAbsent(matchedKey, () => <Map<String, dynamic>>[]).add(row);
+    }
+
+    final routePaths = <List<LatLng>>[];
+    for (final entry in grouped.entries) {
+      final location = byKey[entry.key];
+      if (location == null) continue;
+
+      // 🛠️ FIX 1: Bypass strict 25-minute live filtering if the sync payload is small (e.g., 2 points)
+      final useStrictFilters = strictLiveSession && entry.value.length > 2;
+
+      final scopedPoints = useStrictFilters
+          ? restrictHistoryToLiveSession(entry.value, location)
+          : entry.value;
+
+      final trimmed = trimRouteHistory(
+        scopedPoints,
+        maxAge: (allowTechnicianFallback || !useStrictFilters)
+            ? const Duration(
+                hours: 24) // 🛠️ FIX 2: Give offline history a wide window
+            : const Duration(minutes: 45),
+        maxPoints: allowTechnicianFallback ? 500 : 200,
+      ).toList(growable: true);
+
+      trimmed.sort((a, b) {
+        final aAt = asDateTime(a['captured_at']) ??
+            DateTime.fromMillisecondsSinceEpoch(0);
+        final bAt = asDateTime(b['captured_at']) ??
+            DateTime.fromMillisecondsSinceEpoch(0);
+        return aAt.compareTo(bAt);
+      });
+
+      
+
+      final coordinates = cleanAndSimplifyPath(trimmed).toList(growable: true);
+
+      // 🛠️ FIX 3: Force append the actual active anchor point to close the gap
+      if (coordinates.isNotEmpty) {
+        final distanceToAnchor =
+            distanceMeters(coordinates.last, location.latLng);
+        if (distanceToAnchor > 0.5 && distanceToAnchor <= 5000) {
+          if (coordinates.last.latitude != location.latLng.latitude ||
+              coordinates.last.longitude != location.latLng.longitude) {
+            coordinates.add(location.latLng);
+          }
+        }
+      } else {
+        // If filters stripped everything, seed with the only known spot
+        coordinates.add(location.latLng);
+      }
+
+      // 🛠️ FIX 4: Explicitly allow 2 points to build a path vector
+      if (coordinates.length < 2) continue;
+      routePaths.add(coordinates);
+    }
+
+    return routePaths;
   }
 
   List<List<LatLng>> buildLiveAwareRoutePaths(
@@ -771,28 +855,17 @@ mixin TechnicianMapLogic<W extends TechnicianLocationsMapScreenBase>
         if (fallbackRows != null) routeRows.addAll(fallbackRows);
       }
 
-      // FIX: Never apply strict session filtering for offline/history modes.
-      // strictLiveSession only matters when we're showing a live feed.
-      final useStrictFilters = strictLiveSession &&
-          location.isLive &&
-          !location.isOfflineHistory &&
-          routeRows.length > 2;
-
+      final useStrictFilters = strictLiveSession && routeRows.length > 2;
       final scopedPoints = useStrictFilters
           ? restrictHistoryToLiveSession(routeRows, location)
           : routeRows;
 
-      // FIX: Offline / fallback modes get a 24h window; live gets 45min
-      final maxAge = (allowTechnicianFallback || location.isOfflineHistory)
-          ? const Duration(hours: 24)
-          : const Duration(minutes: 45);
-
-      final maxPoints = allowTechnicianFallback ? 500 : 200;
-
       final trimmed = trimRouteHistory(
         scopedPoints,
-        maxAge: maxAge,
-        maxPoints: maxPoints,
+        maxAge: (allowTechnicianFallback || !useStrictFilters)
+            ? const Duration(hours: 24)
+            : const Duration(minutes: 45),
+        maxPoints: allowTechnicianFallback ? 500 : 200,
       ).toList(growable: true);
 
       trimmed.sort((a, b) {
@@ -803,14 +876,7 @@ mixin TechnicianMapLogic<W extends TechnicianLocationsMapScreenBase>
         return aAt.compareTo(bAt);
       });
 
-      // FIX: Pass the isOfflineHistory flag so cleanAndSimplifyPath
-      // uses the relaxed accuracy threshold for history points.
-      final coordinates = cleanAndSimplifyPath(
-        trimmed,
-        isOfflineHistory: location.isOfflineHistory || allowTechnicianFallback,
-      ).toList(growable: true);
-
-      // Merge live in-memory trail for live technicians
+      final coordinates = cleanAndSimplifyPath(trimmed).toList(growable: true);
       final liveTrail =
           location.isLive ? _liveTrailByKey[location.trackingKey] : null;
 
@@ -834,10 +900,9 @@ mixin TechnicianMapLogic<W extends TechnicianLocationsMapScreenBase>
       );
 
       if (coordinates.length < 2) continue;
-
       final route = downsamplePath(
         coordinates,
-        maxPoints: location.isLive ? 2000 : 500,
+        maxPoints: location.isLive ? 240 : 500,
       );
       _rememberRouteBearing(location, route);
       routePaths.add(route);
@@ -846,121 +911,27 @@ mixin TechnicianMapLogic<W extends TechnicianLocationsMapScreenBase>
     return routePaths;
   }
 
-  // ─────────────────────────────────────────────────────
-  // POLYLINES
-  // FIX: Two separate builders with correct visual styles.
-  // The screen must call the right one based on mode.
-  // ─────────────────────────────────────────────────────
-  
-  /// Builds ordered route paths directly from raw history rows.
-  /// Used for offlineHistoryOnly mode — returns a real path, not just last point.
-  List<List<LatLng>> buildOfflineHistoryPaths(
-    List<Map<String, dynamic>> historyRows,
-  ) {
-    if (historyRows.isEmpty) return const <List<LatLng>>[];
-
-    // Group by technician+job
-    final grouped = <String, List<Map<String, dynamic>>>{};
-
-    for (final row in historyRows) {
-      final lat = asDouble(row['latitude']);
-      final lng = asDouble(row['longitude']);
-      // FIX: Allow points with null accuracy
-      if (lat == null || lng == null) continue;
-      if (lat == 0.0 && lng == 0.0) continue;
-
-      final techId = asInt(row['technician_id']);
-      final jobId = asInt(row['job_id']);
-      final key = buildCompositeTrackingKey(techId, jobId);
-      grouped.putIfAbsent(key, () => <Map<String, dynamic>>[]).add(row);
-    }
-
-    final paths = <List<LatLng>>[];
-
-    for (final rows in grouped.values) {
-      rows.sort((a, b) {
-        final aAt =
-            asDateTime(a['captured_at']) ?? DateTime.fromMillisecondsSinceEpoch(0);
-        final bAt =
-            asDateTime(b['captured_at']) ?? DateTime.fromMillisecondsSinceEpoch(0);
-        return aAt.compareTo(bAt);
-      });
-
-      final coords = cleanAndSimplifyPath(rows, isOfflineHistory: true);
-      if (coords.length >= 2) paths.add(coords);
-    }
-
-    return paths;
-  }
-
-  /// Builds polylines for offline/history mode (grey, thicker)
-  List<Polyline> buildOfflinePolylines(List<List<LatLng>> routePaths) {
-    if (routePaths.isEmpty) return const <Polyline>[];
-    
-    return routePaths
-        .map((coordinates) => Polyline(
-              points: coordinates,
-              strokeWidth: 4,
-              color: const Color(0xFF64748B).withValues(alpha: 0.85),
-              borderColor: Colors.white.withValues(alpha: 0.7),
-              borderStrokeWidth: 1.5,
-              strokeCap: StrokeCap.round,
-            ))
-        .toList(growable: false);
-  }
-
-  /// Grey, thicker — for offline / last-known / history modes.
   List<Polyline> buildHistoryPolylines(List<List<LatLng>> routePaths) {
     if (routePaths.isEmpty) return const <Polyline>[];
+
     return routePaths
         .map(
           (coordinates) => Polyline(
             points: coordinates,
-            strokeWidth: 4,
-            color: const Color(0xFF64748B).withValues(alpha: 0.85),
-            borderColor: Colors.white.withValues(alpha: 0.7),
+            strokeWidth: 8,
+            color: const Color(
+                0xFF64748B), // 🛠️ FIX: Use neutral slate-grey for historical lines
+            borderColor: Colors.white.withValues(alpha: 0.9),
             borderStrokeWidth: 1.5,
             strokeCap: StrokeCap.round,
           ),
         )
         .toList(growable: false);
   }
-  
-  /// Pure in-memory live trail — zero DB lag, always current.
-  /// Use this instead of buildLiveRoutePolylines when isLiveMode=true.
-  List<Polyline> buildLiveOnlyPolylines(List<TechnicianLocation> locations) {
-    if (locations.isEmpty) return const <Polyline>[];
-    final polylines = <Polyline>[];
 
-    for (final location in locations) {
-      if (!location.isLive) continue;
-
-      final trail = _liveTrailByKey[location.trackingKey];
-      if (trail == null || trail.length < 2) continue;
-
-      final trailSorted = trail.toList(growable: false)
-        ..sort((a, b) => a.capturedAt.compareTo(b.capturedAt));
-
-      final points = trailSorted.map((p) => p.latLng).toList(growable: false);
-
-      polylines.add(
-        Polyline(
-          points: points,
-          strokeWidth: 5,
-          color: const Color(0xFF2563EB).withValues(alpha: 0.9),
-          borderColor: Colors.white.withValues(alpha: 0.85),
-          borderStrokeWidth: 2,
-          strokeCap: StrokeCap.round,
-        ),
-      );
-    }
-
-    return polylines;
-  }
-  
-  /// Blue, thinner — for live tracking mode.
   List<Polyline> buildLiveRoutePolylines(List<List<LatLng>> routePaths) {
     if (routePaths.isEmpty) return const <Polyline>[];
+
     return routePaths
         .map(
           (coordinates) => Polyline(
@@ -974,10 +945,6 @@ mixin TechnicianMapLogic<W extends TechnicianLocationsMapScreenBase>
         )
         .toList(growable: false);
   }
-
-  // ─────────────────────────────────────────────────────
-  // ENDPOINT MARKERS
-  // ─────────────────────────────────────────────────────
 
   List<Marker> buildHistoryEndpointMarkers(List<List<LatLng>> routePaths) {
     if (routePaths.isEmpty) return const <Marker>[];
@@ -1042,114 +1009,66 @@ mixin TechnicianMapLogic<W extends TechnicianLocationsMapScreenBase>
     );
   }
 
-  // ─────────────────────────────────────────────────────
-  // PATH CLEANING
-  // FIX: Added `isOfflineHistory` param so the accuracy threshold
-  // is relaxed for history points (60m) vs live (20m).
-  // FIX: Allow null accuracy points (treat as valid)
-  // ─────────────────────────────────────────────────────
-
-List<LatLng> cleanAndSimplifyPath(
-  List<Map<String, dynamic>> points, {
-  bool isOfflineHistory = false,
-}) {
-  if (points.isEmpty) return <LatLng>[];
-
-  final accuracyThreshold = isOfflineHistory ? 60.0 : 20.0;
-
-  // Filter by accuracy — null allowed through, but we'll handle cold-start below
-  final validPoints = points.where((point) {
+List<LatLng> cleanAndSimplifyPath(List<Map<String, dynamic>> points) {
+  // Filter low-accuracy points before building any path
+  final accuratePoints = points.where((point) {
     final accuracy = asDouble(point['accuracy']);
-    return accuracy == null || accuracy <= accuracyThreshold;
+    return accuracy == null || accuracy <= 35.0;
   }).toList();
-
-  if (validPoints.isEmpty) return <LatLng>[];
-
-  // ── COLD-START FIX ──────────────────────────────────────────────────
-  // The first GPS fix after app launch often has null accuracy and is
-  // far from the real start position (device hasn't locked yet).
-  // If the first point has null accuracy AND is more than 15m from the
-  // second point which has good accuracy → drop the first point.
-  if (validPoints.length >= 2) {
-    final first = validPoints[0];
-    final second = validPoints[1];
-    final firstAcc = asDouble(first['accuracy']);
-    final secondAcc = asDouble(second['accuracy']);
-    if (firstAcc == null && secondAcc != null && secondAcc <= 10.0) {
-      final lat1 = asDouble(first['latitude']);
-      final lng1 = asDouble(first['longitude']);
-      final lat2 = asDouble(second['latitude']);
-      final lng2 = asDouble(second['longitude']);
-      if (lat1 != null && lng1 != null && lat2 != null && lng2 != null) {
-        final dist = distanceMeters(LatLng(lat1, lng1), LatLng(lat2, lng2));
-        if (dist > 15.0) {
-          validPoints.removeAt(0); // drop cold-start point
-        }
-      }
-    }
-  }
-  // ────────────────────────────────────────────────────────────────────
-
-  if (validPoints.length < 2) {
-    final p = validPoints.isEmpty ? null : validPoints.first;
-    if (p == null) return <LatLng>[];
-    final lat = asDouble(p['latitude']);
-    final lng = asDouble(p['longitude']);
-    if (lat != null && lng != null && lat != 0.0 && lng != 0.0) {
-      return <LatLng>[LatLng(lat, lng)];
-    }
-    return <LatLng>[];
-  }
 
   final cleaned = <LatLng>[];
   LatLng? previous;
-  DateTime? previousTime;
+  Map<String, dynamic>? previousPoint;
 
-  for (final point in validPoints) {
+  // 🛠️ FIX 5: If we only have ≤2 points after filtering, bypass complex cleaning
+  if (accuratePoints.length <= 2) {
+    for (final point in accuratePoints) {
+      final lat = asDouble(point['latitude']);
+      final lng = asDouble(point['longitude']);
+      if (lat != null && lng != null && lat != 0.0 && lng != 0.0) {
+        cleaned.add(LatLng(lat, lng));
+      }
+    }
+    return cleaned;
+  }
+
+  for (final point in accuratePoints) {   // ← was `points`, now `accuratePoints`
     final lat = asDouble(point['latitude']);
     final lng = asDouble(point['longitude']);
     if (lat == null || lng == null) continue;
     if (lat == 0.0 && lng == 0.0) continue;
 
-    final current = LatLng(lat, lng);
-    final currentTime = asDateTime(point['captured_at'] ?? point['updated_at']);
+    final raw = LatLng(lat, lng);
+    final current = previous == null
+        ? raw
+        : _smooth(previous, raw, asDouble(point['speed']));
 
     if (previous == null) {
       cleaned.add(current);
       previous = current;
-      previousTime = currentTime;
+      previousPoint = point;
       continue;
     }
 
     final distance = distanceMeters(previous, current);
-    if (distance < 1.0) continue;
+    final previousAt = asDateTime(previousPoint?['captured_at']);
+    final currentAt = asDateTime(point['captured_at']);
+    final elapsedSeconds = previousAt != null && currentAt != null
+        ? currentAt.difference(previousAt).inSeconds.abs()
+        : 0;
 
-    int elapsedSeconds = 0;
-    if (previousTime != null && currentTime != null) {
-      elapsedSeconds = currentTime.difference(previousTime).inSeconds.abs();
-    }
+    final maxReasonableDistance =
+        (elapsedSeconds * 55.0 + 100).clamp(500.0, 5000.0).toDouble();
 
-    final maxDistanceMeters = (elapsedSeconds * 55.0 + 100)
-        .clamp(100.0, isOfflineHistory ? 10000.0 : 5000.0);
-
-    if (distance <= maxDistanceMeters) {
+    if (distance >= 0.5 && distance <= maxReasonableDistance) {
       cleaned.add(current);
       previous = current;
-      previousTime = currentTime;
+      previousPoint = point;
     }
-  }
-
-  if (cleaned.length > 500) {
-    return downsamplePath(cleaned, maxPoints: 500);
   }
 
   return cleaned;
 }
-
-  // ─────────────────────────────────────────────────────
-  // TRIM / DOWNSAMPLE
-  // ─────────────────────────────────────────────────────
-
   List<Map<String, dynamic>> trimRouteHistory(
     List<Map<String, dynamic>> points, {
     required Duration maxAge,
@@ -1173,11 +1092,11 @@ List<LatLng> cleanAndSimplifyPath(
           : sorted.sublist(sorted.length - maxPoints);
     }
 
-final threshold = DateTime.now().toUtc().subtract(maxAge);
-final recent = sorted.where((point) {
-  final capturedAt = asDateTime(point['captured_at'])?.toUtc();
-  return capturedAt == null || !capturedAt.isBefore(threshold);
-}).toList();
+    final threshold = latestAt.subtract(maxAge);
+    final recent = sorted.where((point) {
+      final capturedAt = asDateTime(point['captured_at']);
+      return capturedAt == null || !capturedAt.isBefore(threshold);
+    }).toList();
 
     if (recent.length <= maxPoints) return recent;
     return recent.sublist(recent.length - maxPoints);
@@ -1236,10 +1155,6 @@ final recent = sorted.where((point) {
     return sampled;
   }
 
-  // ─────────────────────────────────────────────────────
-  // MARKER BUILDER
-  // ─────────────────────────────────────────────────────
-
   TechnicianLocation? findLocationByMarkerKey(
     List<TechnicianLocation> locations,
     String markerKey,
@@ -1256,6 +1171,7 @@ final recent = sorted.where((point) {
     );
 
     return locations.map((location) {
+      // 🛠️ FIX: Resolve dynamic key colors instead of forcing a static blue tone
       final color =
           colorForTrackingKey(primaryTrackingKeyForLocation(location));
       final isSelected = selectedLocation?.markerKey == location.markerKey;
@@ -1369,10 +1285,6 @@ final recent = sorted.where((point) {
     }).toList();
   }
 
-  // ─────────────────────────────────────────────────────
-  // CAMERA
-  // ─────────────────────────────────────────────────────
-
   void fitCamera(List<TechnicianLocation> locations, {bool force = false}) {
     if (!mapReady || locations.isEmpty) return;
     if (cameraFramed && !force) return;
@@ -1430,12 +1342,13 @@ final recent = sorted.where((point) {
     final distance = distanceMeters(prev, next);
 
     double alpha;
+
     if (speed != null && speed > 10) {
-      alpha = 0.6;
+      alpha = 0.6; // fast movement → less smoothing
     } else if (distance > 20) {
       alpha = 0.5;
     } else {
-      alpha = 0.25;
+      alpha = 0.25; // slow → more smoothing
     }
 
     return LatLng(

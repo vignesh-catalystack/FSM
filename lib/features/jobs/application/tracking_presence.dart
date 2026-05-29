@@ -1,3 +1,5 @@
+import 'dart:async';
+
 class TrackingSnapshot {
   const TrackingSnapshot({
     required this.updatedAt,
@@ -15,12 +17,12 @@ class TrackingSnapshot {
   final bool hasCoordinates;
   final bool hasTrackingSignal;
 
-  bool get isLive =>
-      hasCoordinates &&
-      hasTrackingSignal &&
-      !isTerminal &&
-      !isFromCache &&
-      isFresh;
+  bool get isLive {
+    if (!hasCoordinates) return false;
+    if (isTerminal) return false;
+    if (hasTrackingSignal) return true;
+    return isFresh;
+  }
 
   bool get isOffline =>
       hasCoordinates && hasTrackingSignal && !isTerminal && !isLive;
@@ -32,7 +34,7 @@ class TrackingSnapshot {
 class TrackingPresence {
   const TrackingPresence._();
 
-  static const Duration freshnessWindow = Duration(seconds: 90);
+  static const Duration freshnessWindow = Duration(minutes: 3);
 
   static const Set<String> _activeStatuses = <String>{
     'accepted',

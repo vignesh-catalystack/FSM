@@ -137,6 +137,12 @@ class TechnicianLocation {
           DateTime.tryParse(text.replaceFirst(' ', 'T'));
     }
 
+    double? toDoubleValue(dynamic v) {
+      if (v == null) return null;
+      if (v is num) return v.toDouble();
+      return double.tryParse(v.toString());
+    }
+
     final techId = toIntValue(json['technician_id']);
     final jobId = toIntValue(json['job_id']);
 
@@ -153,8 +159,9 @@ class TechnicianLocation {
           DateTime.fromMillisecondsSinceEpoch(0),
       latLng: LatLng(lat, lng),
       isLive: json['is_live'] == true || json['is_live'] == 1,
-      speed: (json['speed'] as num?)?.toDouble(),
-      accuracy: (json['accuracy'] as num?)?.toDouble(),
+      speed: toDoubleValue(json['speed']),
+      accuracy: toDoubleValue(json['accuracy']),
+      bearing: toDoubleValue(json['bearing'] ?? json['heading']),
     );
   }
 

@@ -22,13 +22,12 @@ class JobApiService {
     'jobs/finish.php',
   ];
 
-  static const List<String> _locationUpdateEndpoints = [
-    'tracking/update_location.php',
-    'jobs/accept.php',
-  ];
+static const List<String> _locationUpdateEndpoints = [
+  'tracking/track_location.php',
+];
 
   static const List<String> _adminLiveEndpoints = [
-    'tracking/live_status.php',
+    'tracking/live_location.php',
     // Final fallback for older installs that fold live data into jobs list.
     'jobs/list.php',
   ];
@@ -512,7 +511,7 @@ Map<String, dynamic> _normalizeLiveRow(Map<String, dynamic> row) {
     }
   }
 
-  Future<String> acceptJobWithLocation({
+  Future<Map<String, dynamic>> acceptJobWithLocation({
     required String? token,
     required int jobId,
     required double latitude,
@@ -557,10 +556,13 @@ Map<String, dynamic> _normalizeLiveRow(Map<String, dynamic> row) {
         final jsonData = _decodeBody(jsonResponse.body);
 
         if (_isSuccess(jsonResponse.statusCode)) {
-          return _extractMessage(
-            jsonData,
-            fallback: 'Job accepted and location updated.',
-          );
+          if (jsonData is Map<String, dynamic>) {
+            return jsonData;
+          }
+          return {
+            'success': true,
+            'message': 'Job accepted and location updated.',
+          };
         }
 
         // Fallback for PHP APIs that read $_POST instead of JSON body.
@@ -571,10 +573,13 @@ Map<String, dynamic> _normalizeLiveRow(Map<String, dynamic> row) {
         );
         final formData = _decodeBody(formResponse.body);
         if (_isSuccess(formResponse.statusCode)) {
-          return _extractMessage(
-            formData,
-            fallback: 'Job accepted and location updated.',
-          );
+          if (formData is Map<String, dynamic>) {
+            return formData;
+          }
+          return {
+            'success': true,
+            'message': 'Job accepted and location updated.',
+          };
         }
 
         errors.add(
@@ -665,99 +670,162 @@ Map<String, dynamic> _normalizeLiveRow(Map<String, dynamic> row) {
     );
   }
 
-  Future<void> updateTechnicianLocation({
-    required String? token,
-    required int jobId,
-    required double latitude,
-    required double longitude,
-    double? accuracy,
-    double? speed,
-    double? heading,
-    DateTime? capturedAt,
-    // 🔋 NEW
-  int? battery,
-  int? isCharging,
-  }) async {
-    final normalizedToken = _normalizeToken(token);
-    if (normalizedToken == null) {
-      throw Exception('Session expired. Please login again.');
-    }
+  // Future<void> updateTechnicianLocation({
+  //   required String? token,
+  //   required int jobId,
+  //   required double latitude,
+  //   required double longitude,
+  //   double? accuracy,
+  //   double? speed,
+  //   double? heading,
+  //   DateTime? capturedAt,
+  //   // 🔋 NEW
+  // int? battery,
+  // int? isCharging,
+  // }) async {
+  //   final normalizedToken = _normalizeToken(token);
+  //   if (normalizedToken == null) {
+  //     throw Exception('Session expired. Please login again.');
+  //   }
 
-    final headers = _jsonHeaders(normalizedToken);
-    final formHeaders = _formHeaders(normalizedToken);
+  //   final headers = _jsonHeaders(normalizedToken);
+  //   final formHeaders = _formHeaders(normalizedToken);
 
-    final locationCapturedAt = (capturedAt ?? DateTime.now()).toIso8601String();
-    final payload = <String, dynamic>{
-      'job_id': jobId,
-      'id': jobId,
-      'status': 'in_progress',
-      'job_status': 'in_progress',
-      'tracking_status': 'active',
-      'is_tracking': 1,
-      'latitude': latitude,
-      'longitude': longitude,
-      'lat': latitude,
-      'lng': longitude,
-      'location_lat': latitude,
-      'location_lng': longitude,
-      'accuracy': accuracy,
-      'speed': speed,
-      'heading': heading,
-      'updated_at': locationCapturedAt,
-      'captured_at': locationCapturedAt,
-    };
-    if (battery != null) {
-      payload['battery'] = battery;
-      payload['is_charging'] = isCharging ?? 0;
-    }
-    final errors = <String>[];
-    for (final endpoint in _locationUpdateEndpoints) {
-      try {
-        final jsonResponse = await _postJson(
-          endpoint,
-          headers: headers,
-          payload: payload,
-        );
-        final jsonData = _decodeBody(jsonResponse.body);
-        if (_didRequestSucceed(
-          statusCode: jsonResponse.statusCode,
-          body: jsonResponse.body,
-          data: jsonData,
-        )) {
-          return;
-        }
+  //   final locationCapturedAt = (capturedAt ?? DateTime.now()).toIso8601String();
+  //   final payload = <String, dynamic>{
+  //     'job_id': jobId,
+  //     'id': jobId,
+  //     'status': 'in_progress',
+  //     'job_status': 'in_progress',
+  //     'tracking_status': 'active',
+  //     'is_tracking': 1,
+  //     'latitude': latitude,
+  //     'longitude': longitude,
+  //     'lat': latitude,
+  //     'lng': longitude,
+  //     'location_lat': latitude,
+  //     'location_lng': longitude,
+  //     'accuracy': accuracy,
+  //     'speed': speed,
+  //     'heading': heading,
+  //     'updated_at': locationCapturedAt,
+  //     'captured_at': locationCapturedAt,
+  //   };
+  //   if (battery != null) {
+  //     payload['battery'] = battery;
+  //     payload['is_charging'] = isCharging ?? 0;
+  //   }
+  //   final errors = <String>[];
+  //   for (final endpoint in _locationUpdateEndpoints) {
+  //     try {
+  //       final jsonResponse = await _postJson(
+  //         endpoint,
+  //         headers: headers,
+  //         payload: payload,
+  //       );
+  //       final jsonData = _decodeBody(jsonResponse.body);
+  //       if (_didRequestSucceed(
+  //         statusCode: jsonResponse.statusCode,
+  //         body: jsonResponse.body,
+  //         data: jsonData,
+  //       )) {
+  //         return;
+  //       }
 
-        final formResponse = await _postForm(
-          endpoint,
-          headers: formHeaders,
-          payload: payload,
-        );
-        final formData = _decodeBody(formResponse.body);
-        if (_didRequestSucceed(
-          statusCode: formResponse.statusCode,
-          body: formResponse.body,
-          data: formData,
-        )) {
-          return;
-        }
+  //       final formResponse = await _postForm(
+  //         endpoint,
+  //         headers: formHeaders,
+  //         payload: payload,
+  //       );
+  //       final formData = _decodeBody(formResponse.body);
+  //       if (_didRequestSucceed(
+  //         statusCode: formResponse.statusCode,
+  //         body: formResponse.body,
+  //         data: formData,
+  //       )) {
+  //         return;
+  //       }
 
-        errors.add(
-          '$endpoint -> ${_extractMessage(formData ?? jsonData, fallback: 'HTTP ${formResponse.statusCode}')}',
-        );
-      } on TimeoutException {
-        errors.add('$endpoint -> request timeout');
-      } catch (e) {
-        errors.add('$endpoint -> $e');
-      }
-    }
+  //       errors.add(
+  //         '$endpoint -> ${_extractMessage(formData ?? jsonData, fallback: 'HTTP ${formResponse.statusCode}')}',
+  //       );
+  //     } on TimeoutException {
+  //       errors.add('$endpoint -> request timeout');
+  //     } catch (e) {
+  //       errors.add('$endpoint -> $e');
+  //     }
+  //   }
 
+  //   throw Exception(
+  //     errors.isEmpty
+  //         ? 'Unable to update live location right now.'
+  //         : 'Unable to update live location: ${errors.join(' | ')}',
+  //   );
+  // }
+Future<void> trackLocation({
+  required String? token,
+  required int jobId,
+  int? sessionId,
+  required double latitude,
+  required double longitude,
+  double? accuracy,
+  double? speed,
+  double? heading,
+}) async {
+
+  final normalizedToken = _normalizeToken(token);
+
+  if (normalizedToken == null) {
     throw Exception(
-      errors.isEmpty
-          ? 'Unable to update live location right now.'
-          : 'Unable to update live location: ${errors.join(' | ')}',
+      'Session expired. Please login again.',
     );
   }
 
+  final headers = _jsonHeaders(normalizedToken);
+
+  final payload = <String, dynamic>{
+    'job_id': jobId,
+    'session_id': sessionId,
+    'latitude': latitude,
+    'longitude': longitude,
+    'accuracy': accuracy,
+    'speed': speed,
+    'heading': heading,
+    'captured_at': DateTime.now().toUtc().toIso8601String(),
+  };
+
+  try {
+
+    final response = await _postJson(
+      'tracking/track_location.php',
+      headers: headers,
+      payload: payload,
+    );
+
+    final data = _decodeBody(response.body);
+
+    if (!_didRequestSucceed(
+      statusCode: response.statusCode,
+      body: response.body,
+      data: data,
+    )) {
+
+      throw Exception(
+        _extractMessage(
+          data,
+          fallback: 'Failed to send location',
+        ),
+      );
+    }
+
+  } catch (error) {
+
+    throw _mapTransportError(
+      error,
+      fallback: 'Unable to send tracking location.',
+    );
+  }
+}
   Future<List<Map<String, dynamic>>> getTechnicianLiveStatus({
     required String? token,
   }) async {
@@ -940,7 +1008,19 @@ Map<String, dynamic> _normalizeLiveRow(Map<String, dynamic> row) {
       }
     }
 
-    if (renderableCachedHistory.isNotEmpty) return renderableCachedHistory;
+    if (renderableCachedHistory.isNotEmpty) {
+  // Only return cached rows that match the requested jobId
+  // otherwise old job's cached data poisons the offline view
+  if (jobId != null) {
+    final matching = renderableCachedHistory
+        .where((r) => r['job_id']?.toString() == jobId.toString())
+        .toList();
+    if (matching.isNotEmpty) return matching;
+    // cached data is for a different job — don't return it
+  } else {
+    return renderableCachedHistory;
+  }
+}
 
     if (notFoundEndpoints.length == _historyEndpoints.length) {
       throw Exception('Location history API not found on server.');
@@ -1264,6 +1344,54 @@ return <String, dynamic>{
           : 'Unable to delete job: ${errors.join(' | ')}',
     );
   }
+
+  Future<List<Map<String, dynamic>>> getLastLocations({
+  required String? token,
+}) async {
+  final normalizedToken = _normalizeToken(token);
+  if (normalizedToken == null) {
+    throw Exception('Session expired. Please login again.');
+  }
+
+  final headers = _jsonHeaders(normalizedToken);
+
+  try {
+    final response = await _get(
+      'tracking/last_locations.php',
+      headers: headers,
+    );
+
+    final data = _decodeBody(response.body);
+
+    if (!_didRequestSucceed(
+      statusCode: response.statusCode,
+      body: response.body,
+      data: data,
+    )) {
+      return [];
+    }
+
+    final rows = <Map<String, dynamic>>[];
+
+    if (data is Map<String, dynamic>) {
+      final list = data['data'];
+      if (list is List) {
+        for (final item in list) {
+          if (item is Map<String, dynamic>) {
+            rows.add(item);
+          }
+        }
+      }
+    }
+
+    return rows;
+  } catch (error) {
+    throw _mapTransportError(
+      error,
+      fallback: 'Unable to fetch last locations.',
+    );
+  }
+}
 
   Future<List<Map<String, dynamic>>> getDeletedJobs({
     required String? token,

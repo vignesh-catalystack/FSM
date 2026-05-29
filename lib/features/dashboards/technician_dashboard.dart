@@ -45,13 +45,9 @@ class _TechnicianDashboardState extends ConsumerState<TechnicianDashboard>
     return raw.isEmpty ? 'pending' : raw;
   }
 
-  bool _canAccept(String status) {
-    final lower = status.toLowerCase();
-    return lower == 'assigned' ||
-        lower == 'pending' ||
-        lower == 'open' ||
-        lower == 'new';
-  }
+bool _canAccept(String status) {
+  return status.toLowerCase() == 'assigned';
+}
 
   bool _canFinish(String status) {
     final lower = status.toLowerCase();
@@ -285,12 +281,19 @@ class _TechnicianDashboardState extends ConsumerState<TechnicianDashboard>
 
     setState(() => _acceptingJobIds.add(jobId));
     try {
-      final message = await ref
-          .read(jobActionControllerProvider)
-          .acceptJobAndShareLocation(jobId: jobId);
-      if (!mounted) return;
-      ScaffoldMessenger.of(context)
-          .showSnackBar(SnackBar(content: Text(message)));
+      final response = await ref
+    .read(jobActionControllerProvider)
+    .acceptJobAndShareLocation(jobId: jobId);
+
+if (!mounted) return;
+
+final message =
+    response['message']?.toString() ??
+    'Job accepted successfully';
+
+ScaffoldMessenger.of(context).showSnackBar(
+  SnackBar(content: Text(message)),
+);
       ref.invalidate(myJobsProvider);
       ref.invalidate(adminTechnicianLiveProvider);
     } catch (e) {

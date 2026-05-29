@@ -50,9 +50,13 @@ class _MyJobsScreenState extends ConsumerState<MyJobsScreen> {
 
     setState(() => _acceptingJobIds.add(jobId));
     try {
-      final message = await ref
-          .read(jobActionControllerProvider)
-          .acceptJobAndShareLocation(jobId: jobId);
+      final response = await ref
+    .read(jobActionControllerProvider)
+    .acceptJobAndShareLocation(jobId: jobId);
+
+final message =
+    response['message']?.toString() ??
+    'Job accepted successfully';
 
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(

@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:math' as math;
 
 import 'package:battery_plus/battery_plus.dart';
 import 'package:flutter/foundation.dart';
@@ -11,20 +12,17 @@ import 'package:fsm/features/jobs/data/job_api_service.dart';
 class TechnicianTrackingService {
   static const Duration _pendingFlushInterval = Duration(seconds: 30);
   static const int _maxSyncBatchSize = 25;
-  static const Duration _heartbeatInterval = Duration(seconds: 45);
-  static const Duration _movingInterval = Duration(seconds: 4);
-  static const Duration _fastMovingInterval = Duration(seconds: 2);
-  static const Duration _stationaryInterval = Duration(seconds: 20);
-  static const double _movingDistanceMeters = 8;
-  static const double _stationaryDistanceMeters = 12;
-  static const double _fastMovingDistanceMeters = 20;
-  static const double _stationarySpeedThresholdMps = 1.2;
-  static const double _fastSpeedThresholdMps = 8.0;
 
-  // 🔋 Battery notification settings
   static const int _lowBatteryThreshold = 20;
   static const int _batteryNotificationId = 9001;
   static const Duration _batteryNotificationCooldown = Duration(minutes: 10);
+
+  // Single source of truth for the live accuracy gate.
+  static const double _liveAccuracyGateMeters = 20.0;
+
+  // Minimum distance a position must move before we store/send it.
+  // Mirrors the simple app's minPathDistanceMeters = 8.
+  static const double _minDistanceMeters = 8.0;
 
   TechnicianTrackingService({
     required this.apiProvider,
@@ -38,40 +36,51 @@ class TechnicianTrackingService {
 
   StreamSubscription<Position>? _positionSubscription;
   Timer? _pendingFlushTimer;
+
   int? _activeJobId;
+  int? _activeSessionId;
+
   Position? _lastSentPosition;
   DateTime? _lastSentAt;
-  Position? _queuedPosition;
-  bool _isSending = false;
+
   bool _isFlushingPending = false;
   bool _disposed = false;
 
-  // 🔋 Battery state
   final Battery _battery = Battery();
+
   final FlutterLocalNotificationsPlugin _notifications =
       FlutterLocalNotificationsPlugin();
+
   bool _notificationsInitialised = false;
+
   DateTime? _lastBatteryNotificationAt;
 
   int? get activeJobId => _activeJobId;
+  int? get activeSessionId => _activeSessionId;
   bool get isTracking => _positionSubscription != null && _activeJobId != null;
 
-  // ─── Notification setup ──────────────────────────────────────────────────
+  // ─────────────────────────────────────────────────────
+  // NOTIFICATIONS
+  // ─────────────────────────────────────────────────────
 
   Future<void> _initNotifications() async {
     if (_notificationsInitialised) return;
+
     const androidSettings =
         AndroidInitializationSettings('@mipmap/ic_launcher');
+
     const darwinSettings = DarwinInitializationSettings(
       requestAlertPermission: true,
       requestBadgePermission: false,
       requestSoundPermission: true,
     );
+
     const initSettings = InitializationSettings(
       android: androidSettings,
       iOS: darwinSettings,
       macOS: darwinSettings,
     );
+
     await _notifications.initialize(initSettings);
     _notificationsInitialised = true;
   }
@@ -79,7 +88,6 @@ class TechnicianTrackingService {
   Future<void> _maybeSendLowBatteryNotification(int batteryPercent) async {
     if (batteryPercent >= _lowBatteryThreshold) return;
 
-    // Cooldown — don't re-notify more often than every 10 minutes
     final now = DateTime.now();
     if (_lastBatteryNotificationAt != null &&
         now.difference(_lastBatteryNotificationAt!) <
@@ -98,10 +106,12 @@ class TechnicianTrackingService {
       priority: Priority.high,
       icon: '@mipmap/ic_launcher',
     );
+
     const darwinDetails = DarwinNotificationDetails(
       presentAlert: true,
       presentSound: true,
     );
+
     const details = NotificationDetails(
       android: androidDetails,
       iOS: darwinDetails,
@@ -116,44 +126,45 @@ class TechnicianTrackingService {
     );
   }
 
-  // ─── Battery reading ─────────────────────────────────────────────────────
-
-  /// Returns {battery: int (0-100), isCharging: int (0|1)}.
-  /// Returns null values if the platform doesn't support it.
   Future<({int? battery, int? isCharging})> _readBattery() async {
     try {
-      final level = await _battery.batteryLevel; // 0–100
+      final level = await _battery.batteryLevel;
       final state = await _battery.batteryState;
-      final charging = (state == BatteryState.charging ||
-              state == BatteryState.full)
-          ? 1
-          : 0;
-
-      // 🔔 Fire local notification if needed (non-blocking)
+      final charging =
+          (state == BatteryState.charging || state == BatteryState.full)
+              ? 1
+              : 0;
       unawaited(_maybeSendLowBatteryNotification(level));
-
       return (battery: level, isCharging: charging);
     } catch (_) {
       return (battery: null, isCharging: null);
     }
   }
 
-  // ─── Tracking lifecycle ──────────────────────────────────────────────────
+  // ─────────────────────────────────────────────────────
+  // TRACKING LIFECYCLE
+  // ─────────────────────────────────────────────────────
 
-  Future<void> startTracking({required int jobId}) async {
+  Future<void> startTracking({
+    required int jobId,
+    int? sessionId,
+  }) async {
     if (_disposed) return;
-    if (_activeJobId == jobId && _positionSubscription != null) return;
+
+    await stopTracking();
 
     final locationEnabled = await Geolocator.isLocationServiceEnabled();
     if (!locationEnabled) {
       throw Exception('Please enable location service for live tracking.');
     }
 
-    final settings = _resolveLocationSettings();
-    await stopTracking();
     _activeJobId = jobId;
-    _queuedPosition = null;
+    _activeSessionId = sessionId;
+
+    final settings = _resolveLocationSettings();
+
     _startPendingFlushTimer();
+
     _positionSubscription = Geolocator.getPositionStream(
       locationSettings: settings,
     ).listen(
@@ -164,8 +175,9 @@ class TechnicianTrackingService {
       cancelOnError: false,
     );
 
+    // Use the same accuracy gate constant for the last-known position
     final lastKnown = await Geolocator.getLastKnownPosition();
-    if (lastKnown != null) {
+    if (lastKnown != null && lastKnown.accuracy <= _liveAccuracyGateMeters) {
       unawaited(_onPosition(lastKnown, force: true));
     }
 
@@ -174,23 +186,30 @@ class TechnicianTrackingService {
     try {
       final current = await Geolocator.getCurrentPosition(
         desiredAccuracy: LocationAccuracy.high,
-        timeLimit: const Duration(seconds: 12),
+        timeLimit: const Duration(seconds: 20),
       );
       await _onPosition(current, force: true);
     } catch (_) {}
   }
 
   Future<void> stopTracking({int? jobId}) async {
-    if (jobId != null && _activeJobId != null && jobId != _activeJobId) return;
+    if (jobId != null && _activeJobId != null && jobId != _activeJobId) {
+      return;
+    }
 
     await _positionSubscription?.cancel();
     _positionSubscription = null;
+
     _pendingFlushTimer?.cancel();
     _pendingFlushTimer = null;
+
     _activeJobId = null;
+    _activeSessionId = null;
+
     _lastSentPosition = null;
     _lastSentAt = null;
-    _queuedPosition = null;
+
+    _isFlushingPending = false;
   }
 
   Future<void> dispose() async {
@@ -198,89 +217,62 @@ class TechnicianTrackingService {
     await stopTracking();
   }
 
-  // ─── Internals ───────────────────────────────────────────────────────────
+  // ─────────────────────────────────────────────────────
+  // LOCATION SETTINGS
+  // ─────────────────────────────────────────────────────
 
   LocationSettings _resolveLocationSettings() {
     if (kIsWeb) {
       return const LocationSettings(
         accuracy: LocationAccuracy.high,
-        distanceFilter: 10,
+        distanceFilter: 3,
       );
     }
+
     switch (defaultTargetPlatform) {
       case TargetPlatform.android:
         return AndroidSettings(
-          accuracy: LocationAccuracy.high,
-          distanceFilter: 10,
-          intervalDuration: const Duration(seconds: 8),
-          forceLocationManager: false,
+          accuracy: LocationAccuracy.bestForNavigation,
+          distanceFilter: 8,
+          intervalDuration: const Duration(seconds: 3),
+          forceLocationManager: true,
         );
+
       case TargetPlatform.iOS:
       case TargetPlatform.macOS:
         return AppleSettings(
-          accuracy: LocationAccuracy.high,
-          distanceFilter: 10,
-          pauseLocationUpdatesAutomatically: true,
+          accuracy: LocationAccuracy.bestForNavigation,
+          distanceFilter: 8,
+          pauseLocationUpdatesAutomatically: false,
           activityType: ActivityType.automotiveNavigation,
         );
+
       default:
         return const LocationSettings(
           accuracy: LocationAccuracy.high,
-          distanceFilter: 10,
+          distanceFilter: 8,
         );
     }
   }
 
+  // ─────────────────────────────────────────────────────
+  // TIMER
+  // ─────────────────────────────────────────────────────
+
   void _startPendingFlushTimer() {
     _pendingFlushTimer?.cancel();
-    _pendingFlushTimer = Timer.periodic(_pendingFlushInterval, (_) {
-      if (_disposed || _activeJobId == null) return;
-      unawaited(_flushPendingSync());
-    });
-  }
-
-  bool _isAccurateEnough(Position position) {
-    final accuracy = position.accuracy;
-    if (accuracy.isNaN || accuracy.isInfinite) return false;
-    final speed =
-        position.speed.isFinite && position.speed > 0 ? position.speed : 0.0;
-    if (speed >= _fastSpeedThresholdMps) return accuracy <= 45;
-    if (speed <= _stationarySpeedThresholdMps) return accuracy <= 25;
-    return accuracy <= 35;
-  }
-
-  bool _shouldSend(Position current) {
-    final lastPos = _lastSentPosition;
-    final lastAt = _lastSentAt;
-    if (lastPos == null || lastAt == null) return true;
-
-    final movedMeters = Geolocator.distanceBetween(
-      lastPos.latitude,
-      lastPos.longitude,
-      current.latitude,
-      current.longitude,
+    _pendingFlushTimer = Timer.periodic(
+      _pendingFlushInterval,
+      (_) {
+        if (_disposed || _activeJobId == null) return;
+        unawaited(_flushPendingSync());
+      },
     );
-    final elapsed = DateTime.now().difference(lastAt);
-    final speed =
-        current.speed.isFinite && current.speed > 0 ? current.speed : 0.0;
-    final stationary = speed <= _stationarySpeedThresholdMps &&
-        movedMeters < _movingDistanceMeters;
-
-    if (elapsed >= _heartbeatInterval) return true;
-    if (stationary) {
-      if (movedMeters >= _stationaryDistanceMeters) return true;
-      if (elapsed >= _stationaryInterval) return true;
-      return false;
-    }
-    if (speed >= _fastSpeedThresholdMps) {
-      if (movedMeters >= _fastMovingDistanceMeters) return true;
-      if (elapsed >= _fastMovingInterval) return true;
-      return false;
-    }
-    if (movedMeters >= _movingDistanceMeters) return true;
-    if (elapsed >= _movingInterval) return true;
-    return false;
   }
+
+  // ─────────────────────────────────────────────────────
+  // HELPERS
+  // ─────────────────────────────────────────────────────
 
   double? _asDouble(dynamic value) {
     if (value == null) return null;
@@ -288,9 +280,27 @@ class TechnicianTrackingService {
     return double.tryParse(value.toString());
   }
 
+  /// Haversine distance in metres between two lat/lng points.
+  double _distanceBetween(
+    double lat1,
+    double lon1,
+    double lat2,
+    double lon2,
+  ) {
+    const earthRadius = 6371000.0;
+    final dLat = (lat2 - lat1) * math.pi / 180;
+    final dLon = (lon2 - lon1) * math.pi / 180;
+    final a = math.pow(math.sin(dLat / 2), 2) +
+        math.pow(math.sin(dLon / 2), 2) *
+            math.cos(lat1 * math.pi / 180) *
+            math.cos(lat2 * math.pi / 180);
+    return earthRadius * 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a));
+  }
+
   Map<String, dynamic> _buildHistoryPoint(Position position, int jobId) {
     return <String, dynamic>{
       'job_id': jobId,
+      'session_id': _activeSessionId,
       'latitude': position.latitude,
       'longitude': position.longitude,
       'accuracy': position.accuracy,
@@ -301,56 +311,73 @@ class TechnicianTrackingService {
     };
   }
 
+  // ─────────────────────────────────────────────────────
+  // PENDING FLUSH
+  // ─────────────────────────────────────────────────────
+
   Future<void> _flushPendingSync() async {
     if (_disposed || _isFlushingPending) return;
     _isFlushingPending = true;
+
     try {
       final queue = await TrackingCacheStore.readPendingSync();
       if (queue.isEmpty) return;
+
       final batch = queue.take(_maxSyncBatchSize).toList();
       final untouched = queue.skip(_maxSyncBatchSize).toList();
-
       final remaining = <Map<String, dynamic>>[];
+
       for (var i = 0; i < batch.length; i++) {
         final item = batch[i];
-        final jobId = item['job_id'];
-        final lat = item['latitude'];
-        final lng = item['longitude'];
-        final parsedLat = _asDouble(lat);
-        final parsedLng = _asDouble(lng);
-        final parsedJobId =
-            jobId is num ? jobId.toInt() : int.tryParse('$jobId');
+
+        final parsedJobId = item['job_id'] is num
+            ? (item['job_id'] as num).toInt()
+            : int.tryParse('${item['job_id']}');
+
+        final parsedSessionId = item['session_id'] is num
+            ? (item['session_id'] as num).toInt()
+            : int.tryParse('${item['session_id']}');
+
+        final parsedLat = _asDouble(item['latitude']);
+        final parsedLng = _asDouble(item['longitude']);
+
         if (parsedJobId == null || parsedLat == null || parsedLng == null) {
           continue;
         }
 
         try {
-          await apiProvider().updateTechnicianLocation(
-            token: tokenProvider(),
-            jobId: parsedJobId,
-            latitude: parsedLat,
-            longitude: parsedLng,
-            accuracy: _asDouble(item['accuracy']),
-            speed: _asDouble(item['speed']),
-            heading: _asDouble(item['heading']),
-            capturedAt: DateTime.tryParse(
-              item['captured_at']?.toString() ?? '',
-            ),
-            // 🔋 No battery data in offline replay
-            battery: null,
-            isCharging: null,
-          );
+          await apiProvider()
+              .trackLocation(
+                token: tokenProvider(),
+                jobId: parsedJobId,
+                sessionId: parsedSessionId,
+                latitude: parsedLat,
+                longitude: parsedLng,
+                accuracy: _asDouble(item['accuracy']),
+                speed: _asDouble(item['speed']),
+                heading: _asDouble(item['heading']),
+              )
+              .timeout(const Duration(seconds: 15));
+
           onLocationSynced?.call();
-        } catch (_) {
-          remaining.add(item);
-          if (i + 1 < batch.length) {
-            remaining.addAll(batch.sublist(i + 1));
+        } catch (e) {
+          final error = e.toString().toLowerCase();
+          final retryable = error.contains('timeout') ||
+              error.contains('socket') ||
+              error.contains('500');
+
+          if (retryable) {
+            remaining.add(item);
+            if (i + 1 < batch.length) {
+              remaining.addAll(batch.sublist(i + 1));
+            }
           }
+
           break;
         }
       }
 
-      await TrackingCacheStore.savePendingSync(<Map<String, dynamic>>[
+      await TrackingCacheStore.savePendingSync([
         ...remaining,
         ...untouched,
       ]);
@@ -359,53 +386,90 @@ class TechnicianTrackingService {
     }
   }
 
-  Future<void> _onPosition(Position position, {bool force = false}) async {
+  // ─────────────────────────────────────────────────────
+  // POSITION HANDLER
+  // ─────────────────────────────────────────────────────
+
+  Future<void> _onPosition(
+    Position position, {
+    bool force = false,
+  }) async {
     if (_disposed) return;
-    if (_isSending) {
-      _queuedPosition = position;
-      return;
-    }
+
     final activeJobId = _activeJobId;
     if (activeJobId == null) return;
 
-    if (!force) {
-      if (!_isAccurateEnough(position)) return;
-      if (!_shouldSend(position)) return;
+    // Gate 1: accuracy — reject weak GPS
+    if (!force && position.accuracy > _liveAccuracyGateMeters) return;
+
+    // Gate 2: time throttle — at most one send per second
+    if (!force &&
+        _lastSentAt != null &&
+        DateTime.now().difference(_lastSentAt!) < const Duration(seconds: 1)) {
+      return;
     }
 
-    final historyPoint = _buildHistoryPoint(position, activeJobId);
-    await TrackingCacheStore.appendHistoryPoint(historyPoint);
-
-    // 🔋 Read battery before sending
-    final batteryInfo = await _readBattery();
-
-    _isSending = true;
-    try {
-      await apiProvider().updateTechnicianLocation(
-        token: tokenProvider(),
-        jobId: activeJobId,
-        latitude: position.latitude,
-        longitude: position.longitude,
-        accuracy: position.accuracy,
-        speed: position.speed,
-        heading: position.heading,
-        capturedAt: position.timestamp,
-        battery: batteryInfo.battery,
-        isCharging: batteryInfo.isCharging,
+    // Gate 3: minimum distance — prevents micro-move flood that backend dedup rejects
+    if (!force && _lastSentPosition != null) {
+      final dist = _distanceBetween(
+        _lastSentPosition!.latitude,
+        _lastSentPosition!.longitude,
+        position.latitude,
+        position.longitude,
       );
+      if (dist < _minDistanceMeters) return;
+    }
+
+    // CRITICAL FIX: Ensure captured_at uses device time consistently
+    final capturedAt = position.timestamp.toLocal();
+
+    final historyPoint = <String, dynamic>{
+      'job_id': activeJobId,
+      'session_id': _activeSessionId,
+      'latitude': position.latitude,
+      'longitude': position.longitude,
+      'accuracy': position.accuracy,
+      'speed': position.speed,
+      'heading': position.heading,
+      'captured_at': capturedAt.toIso8601String(),  // Use local time
+      'source': 'device',
+      'technician_id': null,  // Will be filled by backend
+    };
+
+    // Append to local cache only for valid points
+    unawaited(TrackingCacheStore.appendHistoryPoint(historyPoint));
+    unawaited(_readBattery());
+
+    try {
+      await apiProvider()
+          .trackLocation(
+            token: tokenProvider(),
+            jobId: activeJobId,
+            sessionId: _activeSessionId,
+            latitude: position.latitude,
+            longitude: position.longitude,
+            accuracy: position.accuracy,
+            speed: position.speed,
+            heading: position.heading,
+          )
+          .timeout(const Duration(seconds: 15));
 
       _lastSentPosition = position;
       _lastSentAt = DateTime.now();
+
       onLocationSynced?.call();
-      unawaited(_flushPendingSync());
-    } catch (_) {
-      await TrackingCacheStore.enqueuePendingSync(historyPoint);
-    } finally {
-      _isSending = false;
-      final queued = _queuedPosition;
-      _queuedPosition = null;
-      if (queued != null && !_disposed) {
-        unawaited(_onPosition(queued));
+
+      if (!_isFlushingPending) {
+        unawaited(_flushPendingSync());
+      }
+    } catch (e) {
+      final error = e.toString().toLowerCase();
+      final retryable = error.contains('timeout') ||
+          error.contains('socket') ||
+          error.contains('500');
+
+      if (retryable) {
+        await TrackingCacheStore.enqueuePendingSync(historyPoint);
       }
     }
   }

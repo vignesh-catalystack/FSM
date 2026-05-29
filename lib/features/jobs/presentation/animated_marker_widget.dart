@@ -35,7 +35,7 @@ class _AnimatedMarkerWidgetState extends State<AnimatedMarkerWidget>
     _controller = AnimationController(vsync: this);
     _animation = CurvedAnimation(
       parent: _controller,
-      curve: Curves.easeInOut,
+      curve: Curves.linear,
     );
     _setup(first: true);
   }
@@ -54,7 +54,7 @@ class _AnimatedMarkerWidgetState extends State<AnimatedMarkerWidget>
     _to = widget.position;
 
     final speed = (widget.speed ?? 5).clamp(1, 15);
-    final durationMs = (1400 / speed).clamp(250, 900).toInt();
+    final durationMs = (700 / speed).clamp(120, 350).toInt();
     _controller.duration = Duration(milliseconds: durationMs);
 
     if (first) {
