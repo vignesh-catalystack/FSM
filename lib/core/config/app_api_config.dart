@@ -3,8 +3,8 @@ import 'package:flutter/foundation.dart';
 class AppApiConfig {
   AppApiConfig._();
 
-  static const String _fallbackTunnelBaseUrl =
-       "https://nonredemptive-gyrational-pauletta.ngrok-free.dev/fsm_api";
+static const String _fallbackTunnelBaseUrl =
+    "https://fsm.catalystack.com/fsm_php_backend/fsm_api";
   static const String _androidEmulatorBaseUrl = 'http://10.0.2.2/fsm_api';
   static const String _localMachineBaseUrl = 'http://127.0.0.1/fsm_api';
   static const String _apiRootPath = 'fsm_api';

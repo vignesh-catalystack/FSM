@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../application/job_controller.dart';
+import 'technician_map_screen.dart'; // adjust path if needed
 
 class MyJobsScreen extends ConsumerStatefulWidget {
   const MyJobsScreen({super.key});
@@ -39,6 +40,15 @@ class _MyJobsScreenState extends ConsumerState<MyJobsScreen> {
         lower != 'cancelled';
   }
 
+  bool _isCompletedStatus(String status) {
+    final lower = status.toLowerCase();
+    return lower == 'completed' ||
+        lower == 'finished' ||
+        lower == 'ended' ||
+        lower == 'closed' ||
+        lower == 'done';
+  }
+
   Future<void> _acceptJob(Map<String, dynamic> job) async {
     final jobId = _extractJobId(job);
     if (jobId == null) {
@@ -51,12 +61,11 @@ class _MyJobsScreenState extends ConsumerState<MyJobsScreen> {
     setState(() => _acceptingJobIds.add(jobId));
     try {
       final response = await ref
-    .read(jobActionControllerProvider)
-    .acceptJobAndShareLocation(jobId: jobId);
+          .read(jobActionControllerProvider)
+          .acceptJobAndShareLocation(jobId: jobId);
 
-final message =
-    response['message']?.toString() ??
-    'Job accepted successfully';
+      final message =
+          response['message']?.toString() ?? 'Job accepted successfully';
 
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
@@ -74,6 +83,24 @@ final message =
         setState(() => _acceptingJobIds.remove(jobId));
       }
     }
+  }
+
+  void _openLocationMap(
+    BuildContext context, {
+    required int jobId,
+    required String jobTitle,
+    required bool isCompleted,
+  }) {
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (_) => TechnicianLocationsMapScreen(
+          jobIdFilter: jobId,
+          jobTitleHint: jobTitle,
+          offlineHistoryOnly: isCompleted,
+        ),
+      ),
+    );
   }
 
   @override
@@ -101,10 +128,17 @@ final message =
               final job = item is Map<String, dynamic>
                   ? item
                   : <String, dynamic>{};
+
               final status = _extractStatus(job);
               final jobId = _extractJobId(job);
-              final accepting = jobId != null && _acceptingJobIds.contains(jobId);
+              final accepting =
+                  jobId != null && _acceptingJobIds.contains(jobId);
               final showAccept = _canAccept(status);
+              final isCompleted = _isCompletedStatus(status);
+
+              final jobTitle =
+                  (job['title'] ?? job['job_title'] ?? 'Job ${jobId ?? ''}')
+                      .toString();
 
               return Container(
                 padding: const EdgeInsets.all(16),
@@ -122,22 +156,50 @@ final message =
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Text(
-                      (job['title'] ?? job['job_title'] ?? 'Untitled job')
-                          .toString(),
-                      style: const TextStyle(
-                        fontSize: 16,
-                        fontWeight: FontWeight.w600,
-                      ),
+                    // ── TITLE ROW + LOCATION ICON ──────────────────────────
+                    Row(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Expanded(
+                          child: Text(
+                            jobTitle,
+                            style: const TextStyle(
+                              fontSize: 16,
+                              fontWeight: FontWeight.w600,
+                            ),
+                          ),
+                        ),
+                        if (jobId != null)
+                          Tooltip(
+                            message: isCompleted
+                                ? 'View offline route history'
+                                : 'View live location',
+                            child: IconButton(
+                              icon: Icon(
+                                isCompleted
+                                    ? Icons.history_toggle_off_outlined
+                                    : Icons.location_on_outlined,
+                                color: isCompleted
+                                    ? const Color(0xFF64748B)
+                                    : const Color(0xFF2563EB),
+                              ),
+                              onPressed: () => _openLocationMap(
+                                context,
+                                jobId: jobId,
+                                jobTitle: jobTitle,
+                                isCompleted: isCompleted,
+                              ),
+                            ),
+                          ),
+                      ],
                     ),
+
                     const SizedBox(height: 6),
-                    Text(
-                      status,
-                      style: const TextStyle(
-                        fontSize: 14,
-                        color: Colors.grey,
-                      ),
-                    ),
+
+                    // ── STATUS CHIP ────────────────────────────────────────
+                    _StatusChip(status: status),
+
+                    // ── ACCEPT BUTTON ──────────────────────────────────────
                     if (showAccept) ...[
                       const SizedBox(height: 10),
                       Align(
@@ -154,7 +216,8 @@ final message =
                                   ),
                                 )
                               : const Icon(Icons.check_circle_outline),
-                          label: Text(accepting ? 'Accepting...' : 'Accept Job'),
+                          label: Text(
+                              accepting ? 'Accepting...' : 'Accept Job'),
                         ),
                       ),
                     ],
@@ -164,6 +227,66 @@ final message =
             },
           );
         },
+      ),
+    );
+  }
+}
+
+// ════════════════════════════════════════════════════════════
+//  STATUS CHIP
+// ════════════════════════════════════════════════════════════
+
+class _StatusChip extends StatelessWidget {
+  const _StatusChip({required this.status});
+
+  final String status;
+
+  Color _chipColor() {
+    switch (status.toLowerCase()) {
+      case 'completed':
+      case 'finished':
+      case 'done':
+      case 'ended':
+        return const Color(0xFF16A34A);
+      case 'in_progress':
+      case 'active':
+      case 'accepted':
+        return const Color(0xFF2563EB);
+      case 'cancelled':
+      case 'rejected':
+        return const Color(0xFFDC2626);
+      default:
+        return const Color(0xFF64748B);
+    }
+  }
+
+  String _chipLabel() {
+    final cleaned = status.trim().replaceAll('_', ' ');
+    if (cleaned.isEmpty) return '-';
+    return cleaned
+        .split(RegExp(r'\s+'))
+        .map((w) => w.isEmpty
+            ? w
+            : '${w[0].toUpperCase()}${w.substring(1).toLowerCase()}')
+        .join(' ');
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final color = _chipColor();
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+      decoration: BoxDecoration(
+        color: color.withValues(alpha: 0.10),
+        borderRadius: BorderRadius.circular(999),
+      ),
+      child: Text(
+        _chipLabel(),
+        style: TextStyle(
+          fontSize: 12,
+          fontWeight: FontWeight.w600,
+          color: color,
+        ),
       ),
     );
   }

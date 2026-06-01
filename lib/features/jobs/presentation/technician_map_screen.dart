@@ -72,9 +72,18 @@ class _TechnicianLocationsMapScreenState
   @override
   Widget build(BuildContext context) {
     final liveAsync = ref.watch(adminTechnicianLiveProvider);
-    final historyAsync = widget.offlineHistoryOnly
-    ? ref.watch(adminTechnicianHistoryByJobProvider(widget.jobIdFilter))
-    : ref.watch(adminTechnicianHistoryProvider);
+
+    // ── HISTORY PROVIDER SELECTION ─────────────────────────────────────────
+    // When a jobId is given, ALWAYS watch the job-specific history provider.
+    // This ensures completed jobs show their route even when offlineHistoryOnly
+    // was not explicitly passed from the caller (e.g. job card location icon).
+    final bool useJobSpecificHistory =
+        widget.offlineHistoryOnly || widget.jobIdFilter != null;
+
+    final historyAsync = useJobSpecificHistory
+        ? ref.watch(adminTechnicianHistoryByJobProvider(widget.jobIdFilter))
+        : ref.watch(adminTechnicianHistoryProvider);
+
     final lastAsync = ref.watch(adminTechnicianLastProvider);
 
     final liveRows = liveAsync.valueOrNull ??
@@ -86,22 +95,17 @@ class _TechnicianLocationsMapScreenState
         (lastAsync.valueOrNull ?? const <Map<String, dynamic>>[]).where((row) {
       final jobId = asInt(row['job_id']);
       final techId = asInt(row['technician_id']);
-
-      
-
       if (widget.jobIdFilter != null && jobId != widget.jobIdFilter) {
         return false;
       }
-
       if (widget.technicianIdFilter != null &&
           techId != widget.technicianIdFilter) {
         return false;
       }
-
       return true;
     }).toList(growable: true);
 
-    // For offline history mode, we need to wait for history data
+    // ── LOADING / ERROR GUARDS ────────────────────────────────────────────────
     if (widget.offlineHistoryOnly) {
       if (historyAsync.isLoading && historyRows.isEmpty) {
         return Scaffold(
@@ -109,7 +113,6 @@ class _TechnicianLocationsMapScreenState
           body: const Center(child: CircularProgressIndicator()),
         );
       }
-      
       if (historyAsync.hasError && historyRows.isEmpty) {
         return Scaffold(
           appBar: AppBar(title: Text(_appBarTitle())),
@@ -122,14 +125,12 @@ class _TechnicianLocationsMapScreenState
         );
       }
     } else {
-      // For live mode, check live data
       if (liveAsync.isLoading && liveRows.isEmpty) {
         return Scaffold(
           appBar: AppBar(title: Text(_appBarTitle())),
           body: const Center(child: CircularProgressIndicator()),
         );
       }
-
       if (liveAsync.hasError && liveRows.isEmpty) {
         return Scaffold(
           appBar: AppBar(title: Text(_appBarTitle())),
@@ -148,6 +149,14 @@ class _TechnicianLocationsMapScreenState
       appBar: AppBar(title: Text(_appBarTitle())),
       body: Builder(
         builder: (context) {
+          // ── Still waiting for offline history ──────────────────────────────
+          if (widget.offlineHistoryOnly &&
+              historyAsync.isLoading &&
+              historyAsync.valueOrNull == null) {
+            return const Center(child: CircularProgressIndicator());
+          }
+
+          // ── Dedupe and filter live rows ────────────────────────────────────
           final scopedLiveRows = dedupeRowsByTrackingKey(
             liveRows.where(matchesFilters).toList(growable: true),
             timestampField: 'updated_at',
@@ -156,9 +165,6 @@ class _TechnicianLocationsMapScreenState
           final filteredHistoryRows =
               historyRows.where(matchesFilters).toList(growable: true);
 
-          final trackedRows = scopedLiveRows
-              .where(rowShouldAppearInFeed)
-              .toList(growable: true);
           final liveNowRows =
               scopedLiveRows.where(rowIsLive).toList(growable: true);
 
@@ -170,150 +176,138 @@ class _TechnicianLocationsMapScreenState
               filteredLiveRows.isEmpty &&
               filteredHistoryRows.isNotEmpty;
 
+          // ── COMPLETED JOB SAFETY NET ───────────────────────────────────────
+          // If jobIdFilter is set and live rows exist but none are "live now"
+          // (all rows are terminal/completed), force the history fallback.
+          // This catches the case where offlineHistoryOnly was not passed
+          // explicitly but the job is already done.
+          final bool jobHasTerminalLiveRows = widget.jobIdFilter != null &&
+              scopedLiveRows.isNotEmpty &&
+              liveNowRows.isEmpty;
+
           final showLastKnownFallback =
               canFallback && liveNowRows.isEmpty && lastRows.isNotEmpty;
-          final useOfflineHistory =
-              widget.offlineHistoryOnly || showHistoryFallback;
 
+          // ─────────────────────────────────────────────────────────────────
+          // DETERMINE MODE
+          // ─────────────────────────────────────────────────────────────────
+          //
+          //  LIVE MODE:    job is active, live rows exist with fresh data.
+          //                Polyline = buildLiveOnlyPolylines() (in-memory trail).
+          //
+          //  OFFLINE MODE: job completed OR offlineHistoryOnly flag set OR
+          //                no live rows available.
+          //                Polyline = buildOfflineHistoryPaths() → buildOfflinePolylines()
+          //
+          // These two paths NEVER share data sources.
+          // ─────────────────────────────────────────────────────────────────
+
+          final bool isLiveMode = !widget.offlineHistoryOnly &&
+              liveNowRows.isNotEmpty &&
+              !showHistoryFallback &&
+              !jobHasTerminalLiveRows;
+
+          final bool useOfflineHistory =
+              widget.offlineHistoryOnly ||
+              showHistoryFallback ||
+              jobHasTerminalLiveRows;
+
+          // ── BUILD LOCATIONS ────────────────────────────────────────────────
           final List<TechnicianLocation> locations = [];
 
-          // First line inside Builder, before filteredHistoryRows:
-if (widget.offlineHistoryOnly &&
-    historyAsync.isLoading &&
-    historyAsync.valueOrNull == null) {
-  return const Center(child: CircularProgressIndicator());
-}
-
-          // For offline history mode, ALWAYS use history data
-if (widget.offlineHistoryOnly && filteredHistoryRows.isNotEmpty) {
-  // Sort by time, use the LAST point as the marker position
-  final sorted = [...filteredHistoryRows]
-    ..sort((a, b) {
-      final aAt = asDateTime(a['captured_at']) ?? DateTime(0);
-      final bAt = asDateTime(b['captured_at']) ?? DateTime(0);
-      return aAt.compareTo(bAt);
-    });
-  final last = sorted.last;
-  final lat = asDouble(last['latitude']);
-  final lng = asDouble(last['longitude']);
-  if (lat != null && lng != null && lat != 0.0 && lng != 0.0) {
-    final techId = asInt(last['technician_id']);
-    final jobId = asInt(last['job_id']);
-    final key = buildCompositeTrackingKey(techId, jobId);
-    locations.add(TechnicianLocation(
-      markerKey: key,
-      trackingKey: key,
-      technicianFallbackKey: buildTechnicianFallbackKey(techId),
-      technicianId: techId,
-      jobId: jobId,
-      technicianName: widget.technicianNameHint ?? 'Technician',
-      jobTitle: widget.jobTitleHint ?? 'Job $jobId',
-      jobStatus: 'Completed',
-      trackingStatus: 'Offline',
-      updatedAt: asDateTime(last['captured_at']) ?? DateTime.now(),
-      isLive: false,
-      isOfflineHistory: true,
-      sourceLabel: 'Offline history',
-      latLng: LatLng(lat, lng),
-      speed: asDouble(last['speed']),
-      accuracy: asDouble(last['accuracy']),
-      bearing: readBearing(last),
-    ));
-  }
-} else {
-            // PRIORITY 1: LIVE
-            final liveLocations = extractLocations(filteredLiveRows);
-
-            if (liveLocations.isNotEmpty) {
-              locations.addAll(liveLocations);
-            } else if (showLastKnownFallback) {
-              locations.addAll(extractLastKnownLocations(lastRows));
-            } else if (useOfflineHistory && filteredHistoryRows.isNotEmpty) {
-              locations.addAll(extractOfflineHistoryLocations(
-                scopedLiveRows,
-                filteredHistoryRows,
-              ));
-            }
-          }
-
-          // For offline history mode with no locations but we have history rows, extract directly
-          if (widget.offlineHistoryOnly && locations.isEmpty && filteredHistoryRows.isNotEmpty) {
-            for (final row in filteredHistoryRows) {
-              final lat = asDouble(row['latitude']);
-              final lng = asDouble(row['longitude']);
+          if (widget.offlineHistoryOnly || useOfflineHistory) {
+            // ── OFFLINE HISTORY MODE ─────────────────────────────────────────
+            // Show the last-known position from history as the marker.
+            // The polyline is drawn from ALL history rows via buildOfflineHistoryPaths.
+            if (filteredHistoryRows.isNotEmpty) {
+              final sorted = [...filteredHistoryRows]
+                ..sort((a, b) {
+                  final aAt = asDateTime(a['captured_at']) ?? DateTime(0);
+                  final bAt = asDateTime(b['captured_at']) ?? DateTime(0);
+                  return aAt.compareTo(bAt);
+                });
+              final last = sorted.last;
+              final lat = asDouble(last['latitude']);
+              final lng = asDouble(last['longitude']);
               if (lat != null && lng != null && lat != 0.0 && lng != 0.0) {
-                final technicianId = asInt(row['technician_id']);
-                final jobId = asInt(row['job_id']);
-                final trackingKey = buildCompositeTrackingKey(technicianId, jobId);
+                final techId = asInt(last['technician_id']);
+                final jobId = asInt(last['job_id']);
+                final key = buildCompositeTrackingKey(techId, jobId);
                 locations.add(TechnicianLocation(
-                  markerKey: trackingKey,
-                  trackingKey: trackingKey,
-                  technicianFallbackKey: buildTechnicianFallbackKey(technicianId),
-                  technicianId: technicianId,
+                  markerKey: key,
+                  trackingKey: key,
+                  technicianFallbackKey: buildTechnicianFallbackKey(techId),
+                  technicianId: techId,
                   jobId: jobId,
-                  technicianName: widget.technicianNameHint ?? 'Technician ${technicianId ?? ""}',
-                  jobTitle: widget.jobTitleHint ?? 'Job ${jobId ?? ""}',
+                  technicianName:
+                      widget.technicianNameHint ?? 'Technician',
+                  jobTitle: widget.jobTitleHint ?? 'Job $jobId',
                   jobStatus: 'Completed',
                   trackingStatus: 'Offline',
-                  updatedAt: asDateTime(row['captured_at'] ?? row['updated_at']) ?? DateTime.now(),
+                  updatedAt:
+                      asDateTime(last['captured_at']) ?? DateTime.now(),
                   isLive: false,
                   isOfflineHistory: true,
                   sourceLabel: 'Offline history',
                   latLng: LatLng(lat, lng),
-                  speed: asDouble(row['speed']),
-                  accuracy: asDouble(row['accuracy']),
-                  bearing: readBearing(row),
+                  speed: asDouble(last['speed']),
+                  accuracy: asDouble(last['accuracy']),
+                  bearing: readBearing(last),
                 ));
               }
             }
+          } else if (isLiveMode) {
+            // ── LIVE MODE ────────────────────────────────────────────────────
+            // Markers come from live rows only.
+            locations.addAll(extractLocations(filteredLiveRows));
+          } else if (showLastKnownFallback) {
+            // ── LAST KNOWN FALLBACK ──────────────────────────────────────────
+            // No live data at all — show the most recent synced position.
+            locations.addAll(extractLastKnownLocations(lastRows));
           }
 
-          // ── POLYLINE SELECTION ────────────────────────────────────────
-          final bool isLiveMode = !widget.offlineHistoryOnly && 
-              locations.any((l) => l.isLive) && 
-              !useOfflineHistory;
+          // ─────────────────────────────────────────────────────────────────
+          // BUILD POLYLINES
+          //
+          // KEY RULE:
+          //   isLiveMode  → buildLiveOnlyPolylines(locations)
+          //                 — pure in-memory trail, NO history DB rows
+          //   otherwise   → buildOfflineHistoryPaths(historyRows) → buildOfflinePolylines()
+          //                 — pure DB rows, NO live trail
+          //
+          // The two paths NEVER overlap.
+          // ─────────────────────────────────────────────────────────────────
 
-          // Build route paths based on mode
           List<List<LatLng>> routePaths = [];
           List<Polyline> polylines = [];
 
-          if (widget.offlineHistoryOnly && filteredHistoryRows.isNotEmpty) {
-            // OFFLINE HISTORY MODE: Build complete path from history data
-            routePaths = buildOfflineHistoryPaths(filteredHistoryRows);
-            polylines = buildOfflinePolylines(routePaths);
-          } else if (isLiveMode) {
-            // LIVE MODE: Use in-memory trail + historical points
-            routePaths = buildLiveAwareRoutePaths(
-              filteredHistoryRows,
-              locations,
-              useOfflineHistory || showLastKnownFallback,
-              strictLiveSession: false,
-            );
-            polylines = buildLiveRoutePolylines(routePaths);
+          if (isLiveMode) {
+            // ── LIVE: pure in-memory trail ───────────────────────────────────
+            polylines = buildLiveOnlyPolylines(locations);
           } else if (useOfflineHistory && filteredHistoryRows.isNotEmpty) {
-            // HISTORY FALLBACK: Build complete path from history data
+            // ── OFFLINE: pure DB rows ────────────────────────────────────────
             routePaths = buildOfflineHistoryPaths(filteredHistoryRows);
             polylines = buildOfflinePolylines(routePaths);
           }
 
-          final historyEndpointMarkers = (useOfflineHistory || widget.offlineHistoryOnly)
+          // Endpoint markers (start = green dot, end = red dot) for offline mode.
+          final historyEndpointMarkers = useOfflineHistory
               ? buildHistoryEndpointMarkers(routePaths)
               : const <Marker>[];
 
           final markers = buildMarkers(locations);
 
-          // Handle empty state
-          if (locations.isEmpty && routePaths.isEmpty) {
+          // ── EMPTY STATE ────────────────────────────────────────────────────
+          if (locations.isEmpty && routePaths.isEmpty && polylines.isEmpty) {
             return Center(
               child: Padding(
                 padding: const EdgeInsets.all(20),
                 child: Text(
-                  widget.offlineHistoryOnly && widget.jobIdFilter != null
+                  (widget.offlineHistoryOnly || useOfflineHistory) &&
+                          widget.jobIdFilter != null
                       ? 'No offline location history found for Job ${widget.jobIdFilter}.'
                       : widget.liveOnly
-                          ? trackedRows.isEmpty
-                              ? 'No technician is active right now.'
-                              : 'Waiting for a fresh location update...'
+                          ? 'No technician is active right now.'
                           : 'No valid technician coordinates available yet.',
                   textAlign: TextAlign.center,
                 ),
@@ -321,43 +315,43 @@ if (widget.offlineHistoryOnly && filteredHistoryRows.isNotEmpty) {
             );
           }
 
-          // Handle camera positioning
-WidgetsBinding.instance.addPostFrameCallback((_) {
-  if (!mounted) return;
-  if (!cameraFramed) {
-    if (routePaths.isNotEmpty) {
-      // Prefer fitting to full route over single marker
-      final allPoints = <LatLng>[];
-      for (final route in routePaths) allPoints.addAll(route);
-      if (allPoints.isNotEmpty && mapReady) {
-        mapController.fitCamera(
-          CameraFit.coordinates(
-            coordinates: allPoints,
-            padding: const EdgeInsets.all(56),
-          ),
-        );
-        cameraFramed = true;
-      }
-    } else if (locations.isNotEmpty) {
-      fitCamera(locations);
-    }
-  } else if (widget.offlineHistoryOnly && routePaths.isNotEmpty && mapReady) {
-    // Re-fit when route data arrives after map was already ready
-    // (cameraFramed may be true from single-marker fit, but route wasn't loaded yet)
-    final allPoints = <LatLng>[];
-    for (final route in routePaths) allPoints.addAll(route);
-    if (allPoints.isNotEmpty) {
-      mapController.fitCamera(
-        CameraFit.coordinates(
-          coordinates: allPoints,
-          padding: const EdgeInsets.all(56),
-        ),
-      );
-    }
-  } else if (!widget.offlineHistoryOnly && locations.isNotEmpty) {
-    followLiveCamera(locations);
-  }
-});
+          // ── CAMERA POSITIONING ─────────────────────────────────────────────
+          WidgetsBinding.instance.addPostFrameCallback((_) {
+            if (!mounted) return;
+
+            if (!cameraFramed) {
+              if (routePaths.isNotEmpty) {
+                final allPoints = <LatLng>[];
+                for (final route in routePaths) allPoints.addAll(route);
+                if (allPoints.isNotEmpty && mapReady) {
+                  mapController.fitCamera(
+                    CameraFit.coordinates(
+                      coordinates: allPoints,
+                      padding: const EdgeInsets.all(56),
+                    ),
+                  );
+                  cameraFramed = true;
+                }
+              } else if (locations.isNotEmpty) {
+                fitCamera(locations);
+              }
+            } else if (useOfflineHistory &&
+                routePaths.isNotEmpty &&
+                mapReady) {
+              final allPoints = <LatLng>[];
+              for (final route in routePaths) allPoints.addAll(route);
+              if (allPoints.isNotEmpty) {
+                mapController.fitCamera(
+                  CameraFit.coordinates(
+                    coordinates: allPoints,
+                    padding: const EdgeInsets.all(56),
+                  ),
+                );
+              }
+            } else if (isLiveMode && locations.isNotEmpty) {
+              followLiveCamera(locations);
+            }
+          });
 
           return Stack(
             children: [
@@ -374,9 +368,8 @@ WidgetsBinding.instance.addPostFrameCallback((_) {
                     if (_mapReadyFired) return;
                     _mapReadyFired = true;
                     mapReady = true;
-                    if (locations.isNotEmpty) {
-                      fitCamera(locations, force: true);
-                    } else if (routePaths.isNotEmpty) {
+
+                    if (routePaths.isNotEmpty) {
                       final allPoints = <LatLng>[];
                       for (final route in routePaths) {
                         allPoints.addAll(route);
@@ -390,6 +383,8 @@ WidgetsBinding.instance.addPostFrameCallback((_) {
                         );
                         cameraFramed = true;
                       }
+                    } else if (locations.isNotEmpty) {
+                      fitCamera(locations, force: true);
                     }
                   },
                 ),
@@ -413,17 +408,14 @@ WidgetsBinding.instance.addPostFrameCallback((_) {
                       maxNativeZoom: 19,
                     ),
 
-                  // DRAW ROUTES
                   if (polylines.isNotEmpty)
                     RepaintBoundary(
                       child: PolylineLayer(polylines: polylines),
                     ),
 
-                  // DRAW START / END MARKERS
-                  if (historyEndpointMarkers.isNotEmpty) 
+                  if (historyEndpointMarkers.isNotEmpty)
                     MarkerLayer(markers: historyEndpointMarkers),
 
-                  // DRAW TECHNICIAN MARKERS
                   if (markers.isNotEmpty)
                     RepaintBoundary(
                       child: MarkerLayer(markers: markers),
@@ -437,7 +429,7 @@ WidgetsBinding.instance.addPostFrameCallback((_) {
                 ],
               ),
 
-              // ── SELECTED LOCATION CARD ──────────────────────────────────
+              // ── SELECTED LOCATION CARD ────────────────────────────────────
               if (selectedLocation != null)
                 Positioned(
                   left: 16,
@@ -466,34 +458,37 @@ WidgetsBinding.instance.addPostFrameCallback((_) {
                   ),
                 ),
 
-              // ── TOP STATUS BAR ──────────────────────────────────────────
+              // ── TOP STATUS BAR ────────────────────────────────────────────
               Positioned(
                 top: 14,
                 left: 14,
                 right: 14,
                 child: _TopStatusBar(
-                  locationCount: locations.isNotEmpty ? locations.length : routePaths.length,
+                  locationCount: isLiveMode
+                      ? locations.length
+                      : (routePaths.isNotEmpty
+                          ? routePaths.length
+                          : locations.length),
                   liveOnly: widget.liveOnly,
-                  offlineHistoryOnly: widget.offlineHistoryOnly,
+                  offlineHistoryOnly:
+                      widget.offlineHistoryOnly || useOfflineHistory,
                   useOfflineHistory: useOfflineHistory,
                   showLastKnownFallback: showLastKnownFallback,
                   jobIdFilter: widget.jobIdFilter,
                   isLiveMode: isLiveMode,
-
-// REPLACE WITH:
-onRefresh: () {
-  if (widget.offlineHistoryOnly) {
-    ref.invalidate(
-      adminTechnicianHistoryByJobProvider(widget.jobIdFilter),
-    );
-  } else {
-    unawaited(refreshMapData(forceHistory: true));
-  }
-},
+                  onRefresh: () {
+                    if (widget.offlineHistoryOnly || useOfflineHistory) {
+                      ref.invalidate(
+                        adminTechnicianHistoryByJobProvider(widget.jobIdFilter),
+                      );
+                    } else {
+                      unawaited(refreshMapData(forceHistory: true));
+                    }
+                  },
                 ),
               ),
 
-              // ── LAYER PICKER ────────────────────────────────────────────
+              // ── LAYER PICKER ──────────────────────────────────────────────
               Positioned(
                 top: 80,
                 right: 14,
@@ -503,7 +498,7 @@ onRefresh: () {
                 ),
               ),
 
-              // ── ZOOM CONTROLS ───────────────────────────────────────────
+              // ── ZOOM CONTROLS ─────────────────────────────────────────────
               Positioned(
                 right: 16,
                 bottom: 88,
@@ -525,7 +520,7 @@ onRefresh: () {
                 ),
               ),
 
-              // ── RE-CENTRE FAB ───────────────────────────────────────────
+              // ── RE-CENTRE FAB ─────────────────────────────────────────────
               Positioned(
                 right: 16,
                 bottom: 20,
@@ -533,9 +528,7 @@ onRefresh: () {
                   mini: true,
                   tooltip: 'Re-centre map',
                   onPressed: () {
-                    if (locations.isNotEmpty) {
-                      fitCamera(locations, force: true);
-                    } else if (routePaths.isNotEmpty) {
+                    if (routePaths.isNotEmpty) {
                       final allPoints = <LatLng>[];
                       for (final route in routePaths) {
                         allPoints.addAll(route);
@@ -548,6 +541,8 @@ onRefresh: () {
                           ),
                         );
                       }
+                    } else if (locations.isNotEmpty) {
+                      fitCamera(locations, force: true);
                     }
                   },
                   child: const Icon(Icons.my_location),
@@ -1001,8 +996,9 @@ class _MapLayerPickerState extends State<_MapLayerPicker> {
                           layer.label,
                           style: TextStyle(
                             fontSize: 13,
-                            fontWeight:
-                                isActive ? FontWeight.w700 : FontWeight.w500,
+                            fontWeight: isActive
+                                ? FontWeight.w700
+                                : FontWeight.w500,
                             color: isActive
                                 ? const Color(0xFF2563EB)
                                 : const Color(0xFF0F172A),
